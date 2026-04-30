@@ -1,63 +1,90 @@
-name: Download, Split and Release
+name: Pip Download Wheels and Release
 
 on:
   workflow_dispatch:
     inputs:
-      url:
-        description: '需要下载的 URL'
+      pip_command:
+        description: '输入 pip download 命令，例如: pip download requests numpy'
         required: true
-        type: string
-      split_size:
-        description: '分卷大小 (单位: MB)'
-        required: true
-        default: '50'
         type: string
 
 jobs:
-  process-and-release:
+  download-and-release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # 必须的权限，用于创建 Release 和上传 Assets
+      contents: write
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare directories
+      - name: Prepare folders
         run: |
-          mkdir -p dl_folder
+          mkdir -p wheelhouse
           mkdir -p output_folder
 
-      - name: Download file
+      - name: Parse pip command and download wheels
+        id: download
         run: |
-          cd dl_folder
-          echo "开始下载: ${{ inputs.url }}"
-          # 使用 wget 并结合 content-disposition 自动获取正确的远程文件名
-          wget --content-disposition --trust-server-names "${{ inputs.url }}"
-          echo "下载完成，文件列表："
-          ls -lh
+          CMD="${{ inputs.pip_command }}"
 
-      - name: Zip and split file
+          # 删除开头的 "pip download"
+          PACKAGES=$(echo "$CMD" | sed 's/^pip[ ]\+download[ ]*//')
+
+          echo "准备下载:"
+          echo "$PACKAGES"
+
+          python -m pip install --upgrade pip
+
+          pip download $PACKAGES \
+            --dest wheelhouse \
+            --only-binary=:all: \
+            --platform win_amd64 \
+            --python-version 312 \
+            --implementation cp \
+            --abi cp312
+
+          echo "下载完成:"
+          ls -lh wheelhouse
+
+          FIRST_FILE=$(ls wheelhouse | head -n 1)
+          SAFE_NAME=$(echo "$FIRST_FILE" | sed 's/[^a-zA-Z0-9._-]/_/g')
+
+          echo "safe_name=$SAFE_NAME" >> $GITHUB_OUTPUT
+
+      - name: Zip and split into 2 parts
         run: |
-          cd dl_folder
-          # 使用 zip 的 -s 参数进行分卷压缩
-          # 输出到外层的 output_folder 中
-          zip -s ${{ inputs.split_size }}m ../output_folder/archive.zip *
-          
-          echo "分卷压缩完成，生成的文件列表："
-          ls -lh ../output_folder/
+          cd wheelhouse
 
-      - name: Generate timestamp for Release tag
+          FILE_SIZE_BYTES=$(du -sb . | cut -f1)
+          HALF_SIZE_MB=$(( (FILE_SIZE_BYTES / 1024 / 1024 / 2) + 1 ))
+
+          ZIP_NAME="../output_folder/wheels.zip"
+
+          echo "总大小: $FILE_SIZE_BYTES bytes"
+          echo "每卷大小: ${HALF_SIZE_MB} MB"
+
+          zip -r -s ${HALF_SIZE_MB}m "$ZIP_NAME" .
+
+          echo "压缩完成:"
+          ls -lh ../output_folder
+
+      - name: Generate timestamp
         id: time
-        # 生成时间戳用于 Release 的 Tag 命名
-        run: echo "tag=$(date +'%Y-%m-%d-%H-%M-%S')" >> $GITHUB_OUTPUT
+        run: echo "time=$(date +'%Y-%m-%d-%H-%M-%S')" >> $GITHUB_OUTPUT
 
-      - name: Create Release and Upload
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: task-${{ steps.time.outputs.tag }}
-          name: 自动下载与分卷任务 (${{ steps.time.outputs.tag }})
+          tag_name: wheels-${{ steps.time.outputs.time }}
+          name: Python Wheels for Windows 11 Py3.12
           body: |
-            **源下载链接:** `${{ inputs.url }}`
-            **单卷设定大小:** `${{ inputs.split_size }} MB`
+            **输入命令**
+            `${{ inputs.pip_command }}`
+
+            **目标平台**
+            Windows 11 x64 / Python 3.12
+
+            **压缩方式**
+            固定分成 2 卷
           files: output_folder/*
