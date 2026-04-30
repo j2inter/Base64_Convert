@@ -1,11 +1,17 @@
-name: Pip Download Wheels (Win11 Py3.12) and Release
+Name: Pip Download Wheels (Win11 Py3.12) and Release
 
 on:
   workflow_dispatch:
     inputs:
       pip_command:
-        description: '输入 pip download 命令，例如: pip download torch torchvision --index-url https://download.pytorch.org/whl/cu130'
+        description: '输入 pip download 命令'
         required: true
+        type: string
+        default: 'pip download torch --index-url https://download.pytorch.org/whl/cu130'
+      part_size:
+        description: '分卷大小 (单位: MB)'
+        required: true
+        default: '2000'
         type: string
 
 jobs:
@@ -27,72 +33,66 @@ jobs:
         id: download
         run: |
           CMD="${{ inputs.pip_command }}"
-
-          # 去掉 pip download 前缀
+          # 去掉 pip download 前缀并清理空格
           ARGS=$(echo "$CMD" | sed 's/^pip[ ]\+download[ ]*//')
 
-          echo "执行参数:"
-          echo "$ARGS"
+          echo "执行参数: $ARGS"
 
           python -m pip install --upgrade pip
 
+          # 执行下载
           pip download $ARGS \
             --dest wheelhouse \
             --only-binary=:all: \
             --platform win_amd64 \
             --python-version 312 \
             --implementation cp \
-            --abi cp312
+            --abi cp312 \
+            --no-cache-dir
 
-          echo "下载完成:"
-          ls -lh wheelhouse
+          # 检查结果
+          if [ -z "$(ls -A wheelhouse)" ]; then
+            echo "Error: No files downloaded."
+            exit 1
+          fi
 
+          # 生成安全的 Tag 名称
           FIRST_FILE=$(ls wheelhouse | head -n 1)
-          SAFE_NAME=$(echo "$FIRST_FILE" | sed 's/[^a-zA-Z0-9._-]/_/g')
-
+          SAFE_NAME=$(echo "$FIRST_FILE" | sed 's/[^a-zA-Z0-9.-]/_/g')
           echo "safe_name=$SAFE_NAME" >> $GITHUB_OUTPUT
 
-      - name: Zip and force split into 2 parts
+      - name: Create Standard Multi-part Zip
         run: |
+          # 进入下载目录
           cd wheelhouse
-
-          # 先打完整 zip
-          zip -r ../output/wheels.zip .
-
-          cd ../output
-
-          FILE_SIZE=$(stat -c%s wheels.zip)
-          HALF_SIZE=$(( (FILE_SIZE / 2) + 1 ))
-
-          echo "总大小: $FILE_SIZE bytes"
-          echo "每卷大小: $HALF_SIZE bytes"
-
-          split -b $HALF_SIZE -d -a 1 wheels.zip wheels.zip.part
-
-          rm wheels.zip
-
-          echo "最终文件:"
-          ls -lh
+          
+          # 使用 zip -s 创建标准分卷
+          # -s 参数后接大小和单位 (m 代表 MB)
+          # 注意：zip 命令会生成 wheels.z01, wheels.z02... 和最终的 wheels.zip
+          zip -s ${{ inputs.part_size }}m -r ../output/wheels.zip .
+          
+          echo "分卷创建完成，文件列表："
+          ls -lh ../output/
 
       - name: Generate timestamp
         id: time
-        run: echo "time=$(date +'%Y-%m-%d-%H-%M-%S')" >> $GITHUB_OUTPUT
+        run: echo "time=$(date +'%Y-%m-%d-%H-%M')" >> $GITHUB_OUTPUT
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: wheels-${{ steps.download.outputs.safe_name }}-${{ steps.time.outputs.time }}
+          tag_name: ${{ steps.download.outputs.safe_name }}-${{ steps.time.outputs.time }}
           name: Python Wheels (Win11 Py3.12)
           body: |
-            **输入命令**
-            ```
-            ${{ inputs.pip_command }}
-            ```
+            ### 📦 下载详情
+            - **原始命令**: `${{ inputs.pip_command }}`
+            - **分卷大小**: `${{ inputs.part_size }} MB`
+            - **目标平台**: Windows x64 (Python 3.12)
 
-            **目标平台**
-            Windows 11 x64 / Python 3.12
-
-            **说明**
-            - 已强制仅下载 wheel
-            - 自动分成 2 个压缩分卷
+            ### 🛠 如何解压
+            1. 下载下方 **所有** 的分卷文件（`.z01`, `.z02`... 以及 `.zip`）。
+            2. 将它们放在同一个文件夹内。
+            3. **右键点击 `.zip` 结尾的文件**，使用 7-Zip 或 WinRAR 选择“解压到当前文件夹”。
+            
+            > 注意：不要直接打开 `.z01` 等文件，只需操作最后的 `.zip` 即可。
           files: output/*
