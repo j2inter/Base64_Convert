@@ -1,0 +1,63 @@
+name: Download, Split and Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: '需要下载的 URL'
+        required: true
+        type: string
+      split_size:
+        description: '分卷大小 (单位: MB)'
+        required: true
+        default: '50'
+        type: string
+
+jobs:
+  process-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 必须的权限，用于创建 Release 和上传 Assets
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare directories
+        run: |
+          mkdir -p dl_folder
+          mkdir -p output_folder
+
+      - name: Download file
+        run: |
+          cd dl_folder
+          echo "开始下载: ${{ inputs.url }}"
+          # 使用 wget 并结合 content-disposition 自动获取正确的远程文件名
+          wget --content-disposition --trust-server-names "${{ inputs.url }}"
+          echo "下载完成，文件列表："
+          ls -lh
+
+      - name: Zip and split file
+        run: |
+          cd dl_folder
+          # 使用 zip 的 -s 参数进行分卷压缩
+          # 输出到外层的 output_folder 中
+          zip -s ${{ inputs.split_size }}m ../output_folder/archive.zip *
+          
+          echo "分卷压缩完成，生成的文件列表："
+          ls -lh ../output_folder/
+
+      - name: Generate timestamp for Release tag
+        id: time
+        # 生成时间戳用于 Release 的 Tag 命名
+        run: echo "tag=$(date +'%Y-%m-%d-%H-%M-%S')" >> $GITHUB_OUTPUT
+
+      - name: Create Release and Upload
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: task-${{ steps.time.outputs.tag }}
+          name: 自动下载与分卷任务 (${{ steps.time.outputs.tag }})
+          body: |
+            **源下载链接:** `${{ inputs.url }}`
+            **单卷设定大小:** `${{ inputs.split_size }} MB`
+          files: output_folder/*
