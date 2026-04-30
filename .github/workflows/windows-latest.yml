@@ -1,4 +1,4 @@
-name: Download WHL → ZIP → Release
+name: windows-latest+Download WHL → ZIP → Release
 
 on:
   workflow_dispatch:
