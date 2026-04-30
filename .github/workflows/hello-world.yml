@@ -1,0 +1,8 @@
+name: GitHub Actions 示範
+on: [push] # 當代碼被 push 時觸發
+jobs:
+  check-bats-version:
+    runs-on: ubuntu-latest # 在最新的 Ubuntu 虛擬機上執行
+    steps:
+      - name: 顯示訊息
+        run: echo "Hello, GitHub Actions!"
