@@ -1,4 +1,4 @@
-name: Download, Split and Release
+Name: Download, Split and Release
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
   process-and-release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # 必须的权限，用于创建 Release 和上传 Assets
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -29,35 +29,49 @@ jobs:
           mkdir -p output_folder
 
       - name: Download file
+        id: download
         run: |
           cd dl_folder
           echo "开始下载: ${{ inputs.url }}"
-          # 使用 wget 并结合 content-disposition 自动获取正确的远程文件名
+          # 使用 wget 下载
           wget --content-disposition --trust-server-names "${{ inputs.url }}"
-          echo "下载完成，文件列表："
-          ls -lh
+          
+          # 核心逻辑：获取下载后的文件名（排除目录本身）
+          # 取当前目录下最新的文件作为目标文件名
+          FILENAME=$(ls -t | head -n1)
+          echo "检测到文件名: $FILENAME"
+          
+          # 将文件名存入环境变量和 GitHub Output，方便后续步骤调用
+          echo "filename=$FILENAME" >> $GITHUB_OUTPUT
+          # 同时生成一个干净的 Tag（移除文件名中的特殊字符，防止 Tag 不合法）
+          CLEAN_TAG=$(echo "$FILENAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
+          echo "clean_tag=$CLEAN_TAG" >> $GITHUB_OUTPUT
 
       - name: Zip and split file
         run: |
           cd dl_folder
-          # 使用 zip 的 -s 参数进行分卷压缩
-          # 输出到外层的 output_folder 中
-          zip -s ${{ inputs.split_size }}m ../output_folder/archive.zip *
+          # 获取上一步得到的文件名
+          TARGET_FILE="${{ steps.download.outputs.filename }}"
           
-          echo "分卷压缩完成，生成的文件列表："
+          # 使用 zip 压缩并将输出命名为原文件名.zip
+          # 注意：zip 命令会自动处理分卷后缀，如 .z01, .z02, .zip
+          zip -s ${{ inputs.split_size }}m "../output_folder/${TARGET_FILE}.zip" "$TARGET_FILE"
+          
+          echo "分卷压缩完成："
           ls -lh ../output_folder/
 
-      - name: Generate timestamp for Release tag
-        id: time
-        # 生成时间戳用于 Release 的 Tag 命名
-        run: echo "tag=$(date +'%Y-%m-%d-%H-%M-%S')" >> $GITHUB_OUTPUT
+      - name: Generate unique suffix
+        id: suffix
+        run: echo "time=$(date +'%H%M%S')" >> $GITHUB_OUTPUT
 
       - name: Create Release and Upload
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: task-${{ steps.time.outputs.tag }}
-          name: 自动下载与分卷任务 (${{ steps.time.outputs.tag }})
+          # Tag 命名：文件名 + 时间后缀（防止同名文件多次运行报错）
+          tag_name: ${{ steps.download.outputs.clean_tag }}-${{ steps.suffix.outputs.time }}
+          name: 下载任务: ${{ steps.download.outputs.filename }}
           body: |
-            **源下载链接:** `${{ inputs.url }}`
+            **源下载文件:** `${{ steps.download.outputs.filename }}`
+            **原始链接:** `${{ inputs.url }}`
             **单卷设定大小:** `${{ inputs.split_size }} MB`
           files: output_folder/*
