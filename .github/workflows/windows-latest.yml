@@ -1,109 +1,81 @@
-name: windows Download WHL → ZIP → Release
+name: Windows Download WHL → ZIP → Release
 
 on:
   workflow_dispatch:
     inputs:
       pip_args:
-        description: '完整 pip 命令（例如：pip install numpy 或 pip download pandas）'
+        description: '完整 pip 命令'
         required: true
         default: 'pip download numpy pandas'
       release_tag:
-        description: 'Release Tag（建议格式：whl-20260501）'
         required: true
         default: 'whl-20260501'
       release_name:
-        description: 'Release 显示名称'
         required: false
         default: 'WHL 下载包'
 
 jobs:
-  download-and-package:
+  build:
     runs-on: windows-latest
-    timeout-minutes: 40
     permissions:
       contents: write
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          architecture: 'x64'
 
-      - name: Upgrade pip
-        run: python -m pip install --upgrade pip wheel setuptools
+      - run: python -m pip install --upgrade pip wheel setuptools
 
-      - name: Create download directory
-        run: mkdir download
+      - run: mkdir download
 
-      # ✅ 执行用户命令 + 写日志
-      - name: Run custom pip command (with log)
+      # ✅ 执行 pip + 记录日志
+      - name: Run pip
+        shell: pwsh
         run: |
           $logFile = "download\pip-command.txt"
 
-          echo "===== PIP COMMAND =====" | Out-File $logFile
+          echo "COMMAND:" | Out-File $logFile
           echo "${{ inputs.pip_args }}" | Out-File $logFile -Append
           echo "" | Out-File $logFile -Append
-          echo "===== EXECUTION TIME =====" | Out-File $logFile -Append
+          echo "TIME:" | Out-File $logFile -Append
           echo (Get-Date) | Out-File $logFile -Append
-          echo "" | Out-File $logFile -Append
-
-          echo "Executing: ${{ inputs.pip_args }}"
 
           cd download
-          ${{ inputs.pip_args }} 2>&1 | Tee-Object -FilePath pip-output.log
+          ${{ inputs.pip_args }} 2>&1 | Tee-Object pip-output.log
+
+      - run: dir download
         shell: pwsh
 
-      - name: List downloaded files
-        run: dir .\download
-        shell: pwsh
-
-      # ✅ 安装 7-Zip
-      - name: Install 7-Zip
+      - name: Install 7zip
         run: choco install 7zip -y
 
-      # ✅ 标准 ZIP 分卷（2份目标）
-      - name: Compress with standard ZIP split
+      # ✅ 用 cmd 强制标准 zip 分卷
+      - name: Compress (REAL zip split)
+        shell: cmd
         run: |
-          $tag = "${{ inputs.release_tag }}"
-          $baseName = "whl-packages-$tag.zip"
+          set TAG=${{ inputs.release_tag }}
+          set ZIP=whl-packages-%TAG%.zip
 
-          # 计算总大小
-          $totalSize = (Get-ChildItem -Recurse ./download | Measure-Object -Property Length -Sum).Sum
+          REM 计算大小（用 powershell）
+          for /f %%i in ('powershell -command "(Get-ChildItem -Recurse download | Measure Length -Sum).Sum"') do set SIZE=%%i
 
-          if (-not $totalSize -or $totalSize -eq 0) {
-            Write-Error "download 目录为空，无法压缩"
-            exit 1
-          }
+          REM 除以2（字节转MB）
+          for /f %%i in ('powershell -command "[math]::Ceiling(%SIZE%/2/1MB)"') do set PART=%%i
 
-          # 目标：≈2份
-          $partSize = [math]::Ceiling($totalSize / 2)
-          $partSizeMB = [math]::Ceiling($partSize / 1MB)
+          echo Total size: %SIZE%
+          echo Each part: %PART% MB
 
-          echo "Total size: $totalSize bytes"
-          echo "Target part size: $partSizeMB MB"
+          REM ⭐关键：cmd + 明确字符串 → 标准 zip 分卷
+          7z a -tzip "%ZIP%" ".\download\*" -v%PART%m
 
-          # ✅ 标准 ZIP 分卷（生成 .zip + .z01）
-          $volumeArg = "-v${partSizeMB}m"
-          $files = Get-ChildItem -Path .\download\*
-
-          & 7z a -tzip $baseName $files $volumeArg
-
-          echo "ZIP_BASE=$baseName" | Out-File -FilePath $env:GITHUB_ENV -Append
-        shell: pwsh
-
-      # ✅ 上传 Release
-      - name: Create or Update Release
+      - name: Upload Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.release_tag }}
           name: ${{ inputs.release_name }}
-          draft: false
-          prerelease: false
-          generate_release_notes: true
           files: |
             whl-packages-${{ inputs.release_tag }}.zip*
         env:
