@@ -1,16 +1,11 @@
-name: Download, Split and Release
+name: Download, Split into 2 Parts and Release
 
 on:
   workflow_dispatch:
     inputs:
       urls:
-        description: '每行一个下载 URL'
+        description: '多个 URL，用逗号或分号分隔'
         required: true
-        type: string
-      split_size:
-        description: '分卷大小 (单位: MB)'
-        required: true
-        default: '50'
         type: string
 
 jobs:
@@ -33,31 +28,27 @@ jobs:
         run: |
           cd dl_folder
 
-          FIRST_SAFE_NAME=""
-          FIRST_FILE_NAME=""
+          URLS="${{ inputs.urls }}"
 
-          while IFS= read -r url; do
+          # 把逗号和分号统一转成换行
+          echo "$URLS" | tr ',;' '\n' | while read -r url; do
+            url=$(echo "$url" | xargs)
             [ -z "$url" ] && continue
 
             echo "开始下载: $url"
             wget --content-disposition --trust-server-names "$url"
-
-          done << 'EOF'
-          ${{ inputs.urls }}
-          EOF
+          done
 
           echo "下载完成:"
           ls -lh
 
-          FILE_LIST=$(ls -1)
+          FIRST_FILE=$(ls -1 | head -n 1)
+          SAFE_NAME=$(echo "$FIRST_FILE" | sed 's/[^a-zA-Z0-9._-]/_/g')
 
-          FIRST_FILE_NAME=$(echo "$FILE_LIST" | head -n 1)
-          FIRST_SAFE_NAME=$(echo "$FIRST_FILE_NAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
+          echo "first_file=$FIRST_FILE" >> $GITHUB_OUTPUT
+          echo "safe_name=$SAFE_NAME" >> $GITHUB_OUTPUT
 
-          echo "first_file_name=$FIRST_FILE_NAME" >> $GITHUB_OUTPUT
-          echo "first_safe_name=$FIRST_SAFE_NAME" >> $GITHUB_OUTPUT
-
-      - name: Zip and split each file
+      - name: Split each file into 2 parts
         run: |
           cd dl_folder
 
@@ -65,13 +56,20 @@ jobs:
             [ -f "$file" ] || continue
 
             SAFE_NAME=$(echo "$file" | sed 's/[^a-zA-Z0-9._-]/_/g')
+
+            FILE_SIZE_BYTES=$(stat -c%s "$file")
+            HALF_SIZE_MB=$(( (FILE_SIZE_BYTES / 1024 / 1024 / 2) + 1 ))
+
             ZIP_NAME="../output_folder/${SAFE_NAME}.zip"
 
-            echo "压缩并分卷: $file"
-            zip -s ${{ inputs.split_size }}m "$ZIP_NAME" "$file"
+            echo "文件: $file"
+            echo "总大小: $FILE_SIZE_BYTES bytes"
+            echo "每卷大小: ${HALF_SIZE_MB} MB"
+
+            zip -s ${HALF_SIZE_MB}m "$ZIP_NAME" "$file"
           done
 
-          echo "生成文件:"
+          echo "生成结果:"
           ls -lh ../output_folder/
 
       - name: Generate timestamp
@@ -81,13 +79,12 @@ jobs:
       - name: Create Release and Upload
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.download.outputs.first_safe_name }}-${{ steps.time.outputs.time }}
+          tag_name: ${{ steps.download.outputs.safe_name }}-${{ steps.time.outputs.time }}
           name: Batch Download Release
           body: |
-            **下载链接列表:**
-            ```
-            ${{ inputs.urls }}
-            ```
+            **下载链接**
+            `${{ inputs.urls }}`
 
-            **分卷大小:** `${{ inputs.split_size }} MB`
+            **压缩方式**
+            每个文件固定分成 2 个卷
           files: output_folder/*
