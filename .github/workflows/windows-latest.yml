@@ -1,4 +1,4 @@
-name: Windows Download WHL → ZIP → Release
+name: WiDownload  WHL → ZIP → Release
 
 on:
   workflow_dispatch:
@@ -39,12 +39,22 @@ jobs:
       - name: Create download directory
         run: mkdir download
 
-      # ✅ 完全尊重用户输入（不做任何改写）
-      - name: Run custom pip command
+      # ✅ 执行用户命令 + 写日志
+      - name: Run custom pip command (with log)
         run: |
+          $logFile = "download\pip-command.txt"
+
+          echo "===== PIP COMMAND =====" | Out-File $logFile
+          echo "${{ inputs.pip_args }}" | Out-File $logFile -Append
+          echo "" | Out-File $logFile -Append
+          echo "===== EXECUTION TIME =====" | Out-File $logFile -Append
+          echo (Get-Date) | Out-File $logFile -Append
+          echo "" | Out-File $logFile -Append
+
           echo "Executing: ${{ inputs.pip_args }}"
+
           cd download
-          ${{ inputs.pip_args }}
+          ${{ inputs.pip_args }} 2>&1 | Tee-Object -FilePath pip-output.log
         shell: pwsh
 
       - name: List downloaded files
@@ -55,8 +65,8 @@ jobs:
       - name: Install 7-Zip
         run: choco install 7zip -y
 
-      # ✅ 分成 2 份（修复 PowerShell + 7z 参数问题）
-      - name: Compress with split ZIP (2 parts)
+      # ✅ 标准 ZIP 分卷（2份目标）
+      - name: Compress with standard ZIP split
         run: |
           $tag = "${{ inputs.release_tag }}"
           $baseName = "whl-packages-$tag.zip"
@@ -69,26 +79,23 @@ jobs:
             exit 1
           }
 
-          # 计算每份大小（2份）
+          # 目标：≈2份
           $partSize = [math]::Ceiling($totalSize / 2)
           $partSizeMB = [math]::Ceiling($partSize / 1MB)
 
           echo "Total size: $totalSize bytes"
-          echo "Each part: $partSizeMB MB"
+          echo "Target part size: $partSizeMB MB"
 
-          # ✅ 关键修复：避免参数解析错误
+          # ✅ 标准 ZIP 分卷（生成 .zip + .z01）
           $volumeArg = "-v${partSizeMB}m"
-
-          # ✅ 收集文件（避免通配符问题）
           $files = Get-ChildItem -Path .\download\*
 
-          # ✅ 正确调用 7z
           & 7z a -tzip $baseName $files $volumeArg
 
           echo "ZIP_BASE=$baseName" | Out-File -FilePath $env:GITHUB_ENV -Append
         shell: pwsh
 
-      # ✅ 上传所有分卷
+      # ✅ 上传 Release
       - name: Create or Update Release
         uses: softprops/action-gh-release@v2
         with:
