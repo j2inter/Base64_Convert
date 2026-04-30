@@ -1,0 +1,65 @@
+name: usksjhsbd
+
+on:
+  workflow_dispatch:
+    inputs:
+      download_url:
+        description: '要下载的文件完整 URL'
+        required: true
+        type: string
+      release_tag:
+        description: 'Release Tag（例如 v20260430）'
+        required: true
+        default: 'latest'
+        type: string
+
+jobs:
+  split-zip:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download file
+        run: |
+          URL="${{ inputs.download_url }}"
+          ORIGINAL_NAME=$(basename "$URL" | cut -d'?' -f1 | cut -d'#' -f1)
+          
+          echo "original_name=$ORIGINAL_NAME" >> $GITHUB_ENV
+          echo "正在下载: $ORIGINAL_NAME"
+
+          wget --show-progress "$URL" -O downloaded_file
+          echo "下载完成，大小: $(du -h downloaded_file | cut -f1)"
+
+      - name: Create standard 2-part ZIP (Bandizip 友好)
+        run: |
+          BASE_NAME="${{ env.original_name }}"
+          FILE_SIZE=$(stat -c %s downloaded_file)
+          echo "原始文件大小: $((FILE_SIZE / 1024 / 1024)) MB"
+
+          # 计算大致一半大小（单位：字节）
+          HALF_SIZE=$(( (FILE_SIZE + 1) / 2 ))
+
+          echo "准备分成2份，每份约 $((HALF_SIZE / 1024 / 1024)) MB"
+
+          # 使用 zip 原生分卷（推荐 -s 参数 + 较大分卷大小）
+          # 如果还是只生成1份，可以后续再调整策略
+          zip -9 -s ${HALF_SIZE}b "${BASE_NAME}.zip" downloaded_file
+
+          echo "生成的分卷文件："
+          ls -lh "${BASE_NAME}.zip" "${BASE_NAME}.z01" 2>/dev/null || echo "只生成了1个文件"
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: "2-Part ZIP - ${{ inputs.release_tag }}"
+          draft: false
+          prerelease: false
+          files: |
+            *.zip
+            *.z01
+          token: ${{ secrets.GITHUB_TOKEN }}
