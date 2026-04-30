@@ -1,0 +1,71 @@
+name: Download, Split and Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: '需要下载的 URL'
+        required: true
+        type: string
+      split_size:
+        description: '分卷大小 (单位: MB)'
+        required: true
+        default: '50'
+        type: string
+
+jobs:
+  process-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare directories
+        run: |
+          mkdir -p dl_folder
+          mkdir -p output_folder
+
+      - name: Download file
+        id: download
+        run: |
+          cd dl_folder
+          echo "开始下载: ${{ inputs.url }}"
+          wget --content-disposition --trust-server-names "${{ inputs.url }}"
+
+          FILE_NAME=$(ls -1 | head -n 1)
+          BASE_NAME="${FILE_NAME%.*}"
+
+          echo "file_name=$FILE_NAME" >> $GITHUB_OUTPUT
+          echo "base_name=$BASE_NAME" >> $GITHUB_OUTPUT
+
+          echo "下载文件名: $FILE_NAME"
+          echo "基础名称: $BASE_NAME"
+
+      - name: Zip and split file
+        run: |
+          cd dl_folder
+
+          ZIP_NAME="../output_folder/${{ steps.download.outputs.base_name }}.zip"
+
+          zip -s ${{ inputs.split_size }}m "$ZIP_NAME" *
+
+          echo "分卷压缩完成:"
+          ls -lh ../output_folder/
+
+      - name: Generate timestamp
+        id: time
+        run: echo "time=$(date +'%Y-%m-%d-%H-%M-%S')" >> $GITHUB_OUTPUT
+
+      - name: Create Release and Upload
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.download.outputs.base_name }}-${{ steps.time.outputs.time }}
+          name: ${{ steps.download.outputs.base_name }}
+          body: |
+            **源下载链接:** `${{ inputs.url }}`
+            **原始文件名:** `${{ steps.download.outputs.file_name }}`
+            **单卷大小:** `${{ inputs.split_size }} MB`
+          files: output_folder/*
