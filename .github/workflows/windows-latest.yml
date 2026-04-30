@@ -1,4 +1,4 @@
-name: WiDownload  WHL → ZIP → Release
+name: windows Download WHL → ZIP → Release
 
 on:
   workflow_dispatch:
