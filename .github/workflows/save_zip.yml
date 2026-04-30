@@ -8,13 +8,12 @@ jobs:
     steps:
       - name: 下載 PyCharm 安裝包
         run: |
-          # 使用 -L 處理跳轉，-# 顯示進度條
           curl -L "https://download-cdn.jetbrains.com/python/pycharm-2026.1.1.exe" -o pycharm.exe
-      - name: 
+      - name: 压缩成zip
         run: |
-            zip pycharm_archive.zip pycharm.exe
+           zip pycharm_archive.zip pycharm.exe
 
-       - name: 上傳成品 (Artifact)
+      - name: 上傳成品 (Artifact)
         uses: actions/upload-artifact@v4
         with:
           name: pycharm-zip-package
