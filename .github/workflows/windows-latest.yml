@@ -1,4 +1,4 @@
-name: windows Download WHL → ZIP → Release
+name: Windows Download WHL → ZIP → Release
 
 on:
   workflow_dispatch:
@@ -39,7 +39,7 @@ jobs:
       - name: Create download directory
         run: mkdir download
 
-      # ✅ 完全尊重用户输入
+      # ✅ 完全尊重用户输入（不做任何改写）
       - name: Run custom pip command
         run: |
           echo "Executing: ${{ inputs.pip_args }}"
@@ -51,11 +51,11 @@ jobs:
         run: dir .\download
         shell: pwsh
 
-      # ✅ 安装 7zip
+      # ✅ 安装 7-Zip
       - name: Install 7-Zip
         run: choco install 7zip -y
 
-      # ✅ 分成 2 份（动态计算）
+      # ✅ 分成 2 份（修复 PowerShell + 7z 参数问题）
       - name: Compress with split ZIP (2 parts)
         run: |
           $tag = "${{ inputs.release_tag }}"
@@ -64,22 +64,26 @@ jobs:
           # 计算总大小
           $totalSize = (Get-ChildItem -Recurse ./download | Measure-Object -Property Length -Sum).Sum
 
-          if ($totalSize -eq $null -or $totalSize -eq 0) {
+          if (-not $totalSize -or $totalSize -eq 0) {
             Write-Error "download 目录为空，无法压缩"
             exit 1
           }
 
-          # 每份大小（2份）
+          # 计算每份大小（2份）
           $partSize = [math]::Ceiling($totalSize / 2)
-
-          # 转 MB
           $partSizeMB = [math]::Ceiling($partSize / 1MB)
 
           echo "Total size: $totalSize bytes"
           echo "Each part: $partSizeMB MB"
 
-          # 标准 ZIP 分卷
-          7z a -tzip $baseName .\download\* -v${partSizeMB}m
+          # ✅ 关键修复：避免参数解析错误
+          $volumeArg = "-v${partSizeMB}m"
+
+          # ✅ 收集文件（避免通配符问题）
+          $files = Get-ChildItem -Path .\download\*
+
+          # ✅ 正确调用 7z
+          & 7z a -tzip $baseName $files $volumeArg
 
           echo "ZIP_BASE=$baseName" | Out-File -FilePath $env:GITHUB_ENV -Append
         shell: pwsh
