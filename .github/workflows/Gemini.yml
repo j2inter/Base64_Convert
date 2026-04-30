@@ -1,15 +1,15 @@
-name: Pip Download Wheels and Release
+name: Pip Download Wheels (Win11 Py3.12) and Release
 
 on:
   workflow_dispatch:
     inputs:
       pip_command:
-        description: '输入 pip download 命令，例如: pip download requests numpy'
+        description: '输入 pip download 命令，例如: pip download torch torchvision --index-url https://download.pytorch.org/whl/cu130'
         required: true
         type: string
 
 jobs:
-  download-and-release:
+  build:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -18,25 +18,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare folders
+      - name: Prepare directories
         run: |
           mkdir -p wheelhouse
-          mkdir -p output_folder
+          mkdir -p output
 
-      - name: Parse pip command and download wheels
+      - name: Parse and download wheels
         id: download
         run: |
           CMD="${{ inputs.pip_command }}"
 
-          # 删除开头的 "pip download"
-          PACKAGES=$(echo "$CMD" | sed 's/^pip[ ]\+download[ ]*//')
+          # 去掉 pip download 前缀
+          ARGS=$(echo "$CMD" | sed 's/^pip[ ]\+download[ ]*//')
 
-          echo "准备下载:"
-          echo "$PACKAGES"
+          echo "执行参数:"
+          echo "$ARGS"
 
           python -m pip install --upgrade pip
 
-          pip download $PACKAGES \
+          pip download $ARGS \
             --dest wheelhouse \
             --only-binary=:all: \
             --platform win_amd64 \
@@ -52,22 +52,27 @@ jobs:
 
           echo "safe_name=$SAFE_NAME" >> $GITHUB_OUTPUT
 
-      - name: Zip and split into 2 parts
+      - name: Zip and force split into 2 parts
         run: |
           cd wheelhouse
 
-          FILE_SIZE_BYTES=$(du -sb . | cut -f1)
-          HALF_SIZE_MB=$(( (FILE_SIZE_BYTES / 1024 / 1024 / 2) + 1 ))
+          # 先打完整 zip
+          zip -r ../output/wheels.zip .
 
-          ZIP_NAME="../output_folder/wheels.zip"
+          cd ../output
 
-          echo "总大小: $FILE_SIZE_BYTES bytes"
-          echo "每卷大小: ${HALF_SIZE_MB} MB"
+          FILE_SIZE=$(stat -c%s wheels.zip)
+          HALF_SIZE=$(( (FILE_SIZE / 2) + 1 ))
 
-          zip -r -s ${HALF_SIZE_MB}m "$ZIP_NAME" .
+          echo "总大小: $FILE_SIZE bytes"
+          echo "每卷大小: $HALF_SIZE bytes"
 
-          echo "压缩完成:"
-          ls -lh ../output_folder
+          split -b $HALF_SIZE -d -a 1 wheels.zip wheels.zip.part
+
+          rm wheels.zip
+
+          echo "最终文件:"
+          ls -lh
 
       - name: Generate timestamp
         id: time
@@ -76,15 +81,18 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: wheels-${{ steps.time.outputs.time }}
-          name: Python Wheels for Windows 11 Py3.12
+          tag_name: wheels-${{ steps.download.outputs.safe_name }}-${{ steps.time.outputs.time }}
+          name: Python Wheels (Win11 Py3.12)
           body: |
             **输入命令**
-            `${{ inputs.pip_command }}`
+            ```
+            ${{ inputs.pip_command }}
+            ```
 
             **目标平台**
             Windows 11 x64 / Python 3.12
 
-            **压缩方式**
-            固定分成 2 卷
-          files: output_folder/*
+            **说明**
+            - 已强制仅下载 wheel
+            - 自动分成 2 个压缩分卷
+          files: output/*
