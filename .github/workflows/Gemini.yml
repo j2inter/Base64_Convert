@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       pip_command:
-        description: '输入 pip download 命令'
+        description: '输入包名或完整命令 (例: "requests" 或 "pip download torch --index-url ...")'
         required: true
         type: string
-        default: 'pip download torch --index-url https://download.pytorch.org/whl/cu130'
+        default: 'requests'
       part_size:
         description: '分卷大小 (单位: MB)'
         required: true
@@ -32,14 +32,20 @@ jobs:
       - name: Parse and download wheels
         id: download
         run: |
-          CMD="${{ inputs.pip_command }}"
-          # 清理并提取参数
-          ARGS=$(echo "$CMD" | sed 's/^pip[ ]\+download[ ]*//')
+          RAW_INPUT="${{ inputs.pip_command }}"
           
-          echo "执行参数: $ARGS"
+          # 核心逻辑：清理输入
+          # 1. 如果用户带了 "pip download " 前缀，删掉它
+          # 2. 剩下的部分存入 ARGS
+          ARGS=$(echo "$RAW_INPUT" | sed 's/^pip[ ]\+download[ ]*//')
+          
+          echo "解析后的参数: $ARGS"
+          echo "正在检查环境..."
+          
           python -m pip install --upgrade pip
 
-          # 下载 Win 平台包
+          # 执行下载：$ARGS 既可以是 "requests" 也可以是 "torch --index-url ..."
+          # pip 会自动处理：有 URL 用 URL，没 URL 用默认仓库
           pip download $ARGS \
             --dest wheelhouse \
             --only-binary=:all: \
@@ -50,11 +56,11 @@ jobs:
             --no-cache-dir
 
           if [ -z "$(ls -A wheelhouse)" ]; then
-            echo "Error: No files downloaded."
+            echo "错误：未下载到任何文件。请检查包名是否正确或网络是否可用。"
             exit 1
           fi
 
-          # 生成安全的 Release Tag
+          # 生成 Release Tag (取第一个文件的名字)
           FIRST_FILE=$(ls wheelhouse | head -n 1)
           SAFE_NAME=$(echo "$FIRST_FILE" | sed 's/[^a-zA-Z0-9.-]/_/g')
           echo "safe_name=$SAFE_NAME" >> $GITHUB_OUTPUT
@@ -62,10 +68,11 @@ jobs:
       - name: Create Standard Multi-part Zip
         run: |
           cd wheelhouse
-          # 使用 -s 创建标准分卷 (z01, z02, zip)
+          # 创建标准分卷 (z01, z02, zip)
+          # 注意：如果总大小小于分卷设置，只会生成一个 .zip，这是正常的
           zip -s ${{ inputs.part_size }}m -r ../output/wheels.zip .
           
-          echo "分卷列表："
+          echo "最终生成的文件列表："
           ls -lh ../output/
 
       - name: Generate timestamp
@@ -78,11 +85,13 @@ jobs:
           tag_name: ${{ steps.download.outputs.safe_name }}-${{ steps.time.outputs.time }}
           name: Python Wheels (Win11 Py3.12)
           body: |
-            ### 📦 下载详情
-            - **原始命令**: `${{ inputs.pip_command }}`
-            - **分卷大小**: `${{ inputs.part_size }} MB`
-            
-            ### 🛠 如何解压
-            1. 下载所有分卷文件。
-            2. **右键点击 `.zip` 文件**（不是 .z01），使用 7-Zip 或 WinRAR 解压即可。
+            ### 📦 资源详情
+            - **下载指令/包名**: `${{ inputs.pip_command }}`
+            - **分卷策略**: `${{ inputs.part_size }} MB`
+            - **运行平台**: Windows 11 / 10 x64 (Python 3.12)
+
+            ### 🛠 解压指引
+            1. 下载下方所有相关文件（若是分卷，需包括 `.z01`, `.z02` 等和 `.zip`）。
+            2. **确保所有分卷在同一文件夹内**。
+            3. **右键点击 `.zip` 后缀的文件**，使用 7-Zip 或 WinRAR 选择“解压”。
           files: output/*
