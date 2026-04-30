@@ -1,0 +1,63 @@
+name: Download Split and Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: '需要下载的 URL'
+        required: true
+        type: string
+      split_size:
+        description: '分卷大小 (单位: MB)'
+        required: true
+        default: '50'
+        type: string
+
+jobs:
+  process-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare directories
+        run: |
+          mkdir -p dl_folder
+          mkdir -p output_folder
+
+      - name: Download file
+        # 修复点 1：将 URL 存入环境变量，避免 YAML 解析歧义和 Shell 注入风险
+        env:
+          DOWNLOAD_URL: ${{ github.event.inputs.url }}
+        run: |
+          cd dl_folder
+          echo "Processing download..."
+          wget --content-disposition --trust-server-names "$DOWNLOAD_URL"
+
+      - name: Zip and split file
+        # 修复点 2：显式引用 inputs 变量并加双引号
+        run: |
+          cd dl_folder
+          # 检查是否有文件下载成功
+          if [ -z "$(ls -A .)" ]; then
+            echo "错误：下载文件夹为空，请检查 URL 是否有效。"
+            exit 1
+          fi
+          zip -s "${{ github.event.inputs.split_size }}m" ../output_folder/archive.zip ./*
+
+      - name: Generate timestamp
+        id: time
+        run: echo "tag=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
+
+      - name: Create Release and Upload
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "release-${{ steps.time.outputs.tag }}"
+          name: "Archive Release ${{ steps.time.outputs.tag }}"
+          body: |
+            **Source URL:** ${{ github.event.inputs.url }}
+            **Split Size:** ${{ github.event.inputs.split_size }} MB
+          files: output_folder/*
