@@ -1,4 +1,4 @@
-name: Windows Download WHL → ZIP → Release
+name: windows Download WHL → 7z Split → Release
 
 on:
   workflow_dispatch:
@@ -31,20 +31,17 @@ jobs:
 
       - run: mkdir download
 
-      # ✅ 执行 pip + 记录日志
+      # ✅ 执行 pip + log
       - name: Run pip
         shell: pwsh
         run: |
-          $logFile = "download\pip-command.txt"
+          $log = "download\pip-command.txt"
 
-          echo "COMMAND:" | Out-File $logFile
-          echo "${{ inputs.pip_args }}" | Out-File $logFile -Append
-          echo "" | Out-File $logFile -Append
-          echo "TIME:" | Out-File $logFile -Append
-          echo (Get-Date) | Out-File $logFile -Append
+          "COMMAND:" | Out-File $log
+          "${{ inputs.pip_args }}" | Out-File $log -Append
 
           cd download
-          ${{ inputs.pip_args }} 2>&1 | Tee-Object pip-output.log
+          ${{ inputs.pip_args }} 2>&1 | Tee-Object pip.log
 
       - run: dir download
         shell: pwsh
@@ -52,24 +49,21 @@ jobs:
       - name: Install 7zip
         run: choco install 7zip -y
 
-      # ✅ 用 cmd 强制标准 zip 分卷
-      - name: Compress (REAL zip split)
-        shell: cmd
+      # 🔥 核心：7z 原生分卷（不会出现 .zip.001）
+      - name: Create 7z split archive
+        shell: pwsh
         run: |
-          set TAG=${{ inputs.release_tag }}
-          set ZIP=whl-packages-%TAG%.zip
+          $tag = "${{ inputs.release_tag }}"
+          $archive = "whl-packages-$tag.7z"
 
-          REM 计算大小（用 powershell）
-          for /f %%i in ('powershell -command "(Get-ChildItem -Recurse download | Measure Length -Sum).Sum"') do set SIZE=%%i
+          $total = (Get-ChildItem -Recurse download | Measure Length -Sum).Sum
+          $partMB = [math]::Ceiling(($total / 2) / 1MB)
 
-          REM 除以2（字节转MB）
-          for /f %%i in ('powershell -command "[math]::Ceiling(%SIZE%/2/1MB)"') do set PART=%%i
+          echo "Total: $total"
+          echo "Split size: $partMB MB"
 
-          echo Total size: %SIZE%
-          echo Each part: %PART% MB
-
-          REM ⭐关键：cmd + 明确字符串 → 标准 zip 分卷
-          7z a -tzip "%ZIP%" ".\download\*" -v%PART%m
+          # ⭐ 关键：7z 原生格式（不是 zip）
+          & 7z a $archive ".\download\*" "-v${partMB}m" -mx=5
 
       - name: Upload Release
         uses: softprops/action-gh-release@v2
@@ -77,6 +71,6 @@ jobs:
           tag_name: ${{ inputs.release_tag }}
           name: ${{ inputs.release_name }}
           files: |
-            whl-packages-${{ inputs.release_tag }}.zip*
+            whl-packages-${{ inputs.release_tag }}.7z*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
