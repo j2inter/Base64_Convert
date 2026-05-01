@@ -10,7 +10,7 @@ on:
 
 jobs:
   process-and-release:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     permissions:
       contents: write
 
