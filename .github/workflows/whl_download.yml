@@ -1,4 +1,4 @@
-name: Windows Download WHL → 7z Split → Release
+name: Windows Download WHL → 7z Split → Relsease
 
 on:
   workflow_dispatch:
