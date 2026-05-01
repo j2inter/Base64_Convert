@@ -4,15 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       pip_args:
-        description: '完整 pip 命令'
+        description: '输入你的原始命令 (例: pip download numpy 或 pip install torch...)'
         required: true
         default: 'pip download numpy pandas'
-      release_tag:
+      part_size_mb:
+        description: '分卷大小上限 (单位: MB)'
         required: true
-        default: 'whl-20260501'
-      release_name:
+        default: '2000'
+      release_tag:
+        description: 'Release 标签 (留空则使用时间戳)'
         required: false
-        default: 'WHL 下载包'
+        default: ''
 
 jobs:
   build:
@@ -21,56 +23,97 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - run: python -m pip install --upgrade pip wheel setuptools
-
-      - run: mkdir download
-
-      # ✅ 执行 pip + log
-      - name: Run pip
+      - name: Prepare environment
         shell: pwsh
         run: |
-          $log = "download\pip-command.txt"
+          # 清理旧数据，确保环境纯净
+          if (Test-Path "dist") { Remove-Item -Recurse -Force "dist" }
+          if (Test-Path "download") { Remove-Item -Recurse -Force "download" }
+          mkdir download
+          mkdir dist
+          python -m pip install --upgrade pip
 
-          "COMMAND:" | Out-File $log
-          "${{ inputs.pip_args }}" | Out-File $log -Append
-
-          cd download
-          ${{ inputs.pip_args }} 2>&1 | Tee-Object pip.log
-
-      - run: dir download
-        shell: pwsh
-
-      - name: Install 7zip
-        run: choco install 7zip -y
-
-      # 🔥 核心：7z 原生分卷（不会出现 .zip.001）
-      - name: Create 7z split archive
+      - name: Execute Raw Pip Command
         shell: pwsh
         run: |
-          $tag = "${{ inputs.release_tag }}"
-          $archive = "whl-packages-$tag.7z"
+          $rawCmd = "${{ inputs.pip_args }}"
+          
+          # 【核心优化】尊重原始输入，但做兼容性修复
+          # 1. 如果你写成了 install，我们帮你换成 download（否则 install 不会产生本地文件）
+          $finalCmd = $rawCmd -replace "pip install", "pip download"
+          
+          # 2. 强制加上 --dest download，确保文件出现在我们预想的地方
+          if ($finalCmd -notmatch "--dest") {
+            $finalCmd = "$finalCmd --dest download"
+          }
+          
+          # 3. 强制加上 --no-cache-dir 避免缓存干扰
+          if ($finalCmd -notmatch "--no-cache-dir") {
+            $finalCmd = "$finalCmd --no-cache-dir"
+          }
 
-          $total = (Get-ChildItem -Recurse download | Measure Length -Sum).Sum
-          $partMB = [math]::Ceiling(($total / 2) / 1MB)
+          Write-Host ">>> 正在执行最终指令: $finalCmd"
+          Invoke-Expression $finalCmd
 
-          echo "Total: $total"
-          echo "Split size: $partMB MB"
+      - name: Check and List Files
+        id: list_files
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem "download"
+          if ($files.Count -eq 0) {
+            Write-Error "错误：没有检测到任何下载文件。请检查你的命令是否正确。"
+            exit 1
+          }
+          
+          $fileList = $files.Name -join "`n- "
+          "FILE_LIST<<EOF" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "- $fileList" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "EOF" | Out-File -FilePath $env:GITHUB_ENV -Append
+          
+          $time = Get-Date -Format "yyyyMMdd-HHmm"
+          echo "TIMESTAMP=$time" >> $env:GITHUB_ENV
 
-          # ⭐ 关键：7z 原生格式（不是 zip）
-          & 7z a $archive ".\download\*" "-v${partMB}m" -mx=5
+      - name: Create 7z Split Archive
+        shell: pwsh
+        run: |
+          $tag = if ("${{ inputs.release_tag }}") { "${{ inputs.release_tag }}" } else { "whl-$env:TIMESTAMP" }
+          echo "FINAL_TAG=$tag" >> $env:GITHUB_ENV
+          
+          $archivePath = "dist\packages-$tag.7z"
+          
+          # 计算分卷：平分两份，但不超过设定的最大值
+          $totalSize = (Get-ChildItem -Path "download" -Recurse | Measure-Object -Property Length -Sum).Sum
+          $halfSize = [math]::Ceiling(($totalSize / 2) / 1MB)
+          $maxSize = [int]"${{ inputs.part_size_mb }}"
+          $finalPartSize = [math]::Min($halfSize, $maxSize)
+          if ($finalPartSize -lt 1) { $finalPartSize = 1 }
 
-      - name: Upload Release
+          Write-Host ">>> 压缩包分卷大小: $finalPartSize MB"
+          7z a $archivePath ".\download\*" "-v${finalPartSize}m" -mx=5
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.release_tag }}
-          name: ${{ inputs.release_name }}
-          files: |
-            whl-packages-${{ inputs.release_tag }}.7z*
+          tag_name: ${{ env:FINAL_TAG }}
+          name: "WHL: ${{ env:FINAL_TAG }}"
+          body: |
+            ### 🛠 执行指令
+            - 用户输入: `${{ inputs.pip_args }}`
+            
+            ### 📦 文件清单
+            ${{ env:FILE_LIST }}
+            
+            ### 📂 解压指引
+            1. 下载所有相关的 `.7z.xxx` 文件。
+            2. 使用 **7-Zip** 或 **WinRAR** 右键点击 `.7z.001` 解压即可。
+          files: dist/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
