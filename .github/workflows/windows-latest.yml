@@ -34,7 +34,7 @@ jobs:
       - name: Prepare environment
         shell: pwsh
         run: |
-          # 清理旧数据，确保环境纯净
+          # 清理旧数据
           if (Test-Path "dist") { Remove-Item -Recurse -Force "dist" }
           if (Test-Path "download") { Remove-Item -Recurse -Force "download" }
           mkdir download
@@ -46,21 +46,18 @@ jobs:
         run: |
           $rawCmd = "${{ inputs.pip_args }}"
           
-          # 【核心优化】尊重原始输入，但做兼容性修复
-          # 1. 如果你写成了 install，我们帮你换成 download（否则 install 不会产生本地文件）
+          # 自动将 install 替换为 download，并强制指定输出目录
           $finalCmd = $rawCmd -replace "pip install", "pip download"
           
-          # 2. 强制加上 --dest download，确保文件出现在我们预想的地方
           if ($finalCmd -notmatch "--dest") {
             $finalCmd = "$finalCmd --dest download"
           }
           
-          # 3. 强制加上 --no-cache-dir 避免缓存干扰
           if ($finalCmd -notmatch "--no-cache-dir") {
             $finalCmd = "$finalCmd --no-cache-dir"
           }
 
-          Write-Host ">>> 正在执行最终指令: $finalCmd"
+          Write-Host ">>> 执行指令: $finalCmd"
           Invoke-Expression $finalCmd
 
       - name: Check and List Files
@@ -69,11 +66,12 @@ jobs:
         run: |
           $files = Get-ChildItem "download"
           if ($files.Count -eq 0) {
-            Write-Error "错误：没有检测到任何下载文件。请检查你的命令是否正确。"
+            Write-Error "错误：没有检测到任何下载文件。"
             exit 1
           }
           
           $fileList = $files.Name -join "`n- "
+          # 写入 GITHUB_ENV 供后续步骤使用 (Shell 语法用 $env:VARIABLE)
           "FILE_LIST<<EOF" | Out-File -FilePath $env:GITHUB_ENV -Append
           "- $fileList" | Out-File -FilePath $env:GITHUB_ENV -Append
           "EOF" | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -84,32 +82,34 @@ jobs:
       - name: Create 7z Split Archive
         shell: pwsh
         run: |
+          # 确定 Tag
           $tag = if ("${{ inputs.release_tag }}") { "${{ inputs.release_tag }}" } else { "whl-$env:TIMESTAMP" }
           echo "FINAL_TAG=$tag" >> $env:GITHUB_ENV
           
           $archivePath = "dist\packages-$tag.7z"
           
-          # 计算分卷：平分两份，但不超过设定的最大值
+          # 计算分卷
           $totalSize = (Get-ChildItem -Path "download" -Recurse | Measure-Object -Property Length -Sum).Sum
           $halfSize = [math]::Ceiling(($totalSize / 2) / 1MB)
           $maxSize = [int]"${{ inputs.part_size_mb }}"
           $finalPartSize = [math]::Min($halfSize, $maxSize)
           if ($finalPartSize -lt 1) { $finalPartSize = 1 }
 
-          Write-Host ">>> 压缩包分卷大小: $finalPartSize MB"
+          Write-Host ">>> 分卷大小: $finalPartSize MB"
           7z a $archivePath ".\download\*" "-v${finalPartSize}m" -mx=5
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env:FINAL_TAG }}
-          name: "WHL: ${{ env:FINAL_TAG }}"
+          # 注意：GitHub 表达式内必须使用 env.VARIABLE
+          tag_name: ${{ env.FINAL_TAG }}
+          name: "WHL: ${{ env.FINAL_TAG }}"
           body: |
             ### 🛠 执行指令
             - 用户输入: `${{ inputs.pip_args }}`
             
             ### 📦 文件清单
-            ${{ env:FILE_LIST }}
+            ${{ env.FILE_LIST }}
             
             ### 📂 解压指引
             1. 下载所有相关的 `.7z.xxx` 文件。
