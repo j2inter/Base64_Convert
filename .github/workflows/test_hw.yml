@@ -1,0 +1,56 @@
+name: Check Hardware Environment
+
+on:
+  workflow_dispatch: # 允许手动触发
+  push:
+    branches: [ main ]
+
+jobs:
+  inspect-runner:
+    runs-on: ubuntu-latest  # 你可以修改这里，比如改为 windows-latest 或 macos-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Inspect Linux Hardware (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          echo "=== CPU 详情 ==="
+          lscpu | grep -E "Model name|Socket|Core|Thread"
+          
+          echo -e "\n=== 内存信息 ==="
+          free -h
+          
+          echo -e "\n=== 磁盘空间 ==="
+          df -h /
+          
+          echo -e "\n=== 操作系统版本 ==="
+          lsb_release -a
+          
+          echo -e "\n=== 预装工具版本 ==="
+          node -v && python3 --version && docker --version
+
+      - name: Inspect Windows Hardware
+        if: runner.os == 'Windows'
+        run: |
+          echo "=== CPU 详情 ==="
+          Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors
+          
+          echo "=== 内存信息 ==="
+          Get-CimInstance Win32_PhysicalMemory | % { [string]([Math]::Round($_.Capacity / 1GB, 2)) + " GB" }
+          
+          echo "=== 磁盘空间 ==="
+          Get-PSDrive C | Select-Object Used, Free
+
+      - name: Inspect macOS Hardware
+        if: runner.os == 'macOS'
+        run: |
+          echo "=== 硬件概况 ==="
+          system_profiler SPHardwareDataType
+          
+          echo -e "\n=== 内存信息 ==="
+          vm_stat
+          
+          echo -e "\n=== 磁盘空间 ==="
+          df -h /
