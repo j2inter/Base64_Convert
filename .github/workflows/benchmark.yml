@@ -1,11 +1,11 @@
-name: Pure Python Benchmark with Specs
+name: Ultimate Python Hardware Audit
 
 on: 
   workflow_dispatch:
 
 jobs:
-  python-speed-test:
-    name: "🐍 ${{ matrix.os }}"
+  audit-and-bench:
+    name: "🔍 Audit: ${{ matrix.os }}"
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -18,91 +18,85 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Run Benchmark & Audit
+      - name: Detailed Hardware Audit & Benchmark
         shell: python
         env:
           PYTHONIOENCODING: "utf-8"
         run: |
-          import time
+          import subprocess
+          import platform
           import sys
-          import hashlib
           import os
           import io
-          import platform
-          import subprocess
           import multiprocessing
+          import time
+          import hashlib
 
-          # 编码修复 (Windows 必备)
+          # 强制 UTF-8 输出以支持特殊符号
           if sys.platform == "win32":
               sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-          def separator():
-              print("-" * 50)
+          def run_cmd(cmd):
+              try:
+                  return subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT).decode().strip()
+              except:
+                  return "无法获取信息"
 
-          # --- 0. 硬件环境审计 ---
-          separator()
-          print("🖥️  HARDWARE & SYSTEM AUDIT")
-          separator()
-          print(f"操作系统: {platform.system()} {platform.release()} ({platform.machine()})")
-          print(f"系统版本: {platform.version()}")
-          print(f"Python版本: {sys.version.split()[0]}")
-          print(f"逻辑核心数: {multiprocessing.cpu_count()}")
+          def header(title):
+              print(f"\n{'='*20} {title} {'='*20}")
+
+          # --- 1. 详细硬件审计 ---
+          header("🖥️ 系统核心信息")
+          print(f"节点名称: {platform.node()}")
+          print(f"操作系统: {platform.platform()}")
+          print(f"处理器架构: {platform.processor()} ({platform.machine()})")
           
-          # 尝试获取物理内存大小
-          try:
-              if sys.platform == "win32":
-                  # Windows 使用 wmic (虽然弃用但在 GitHub Runner 默认环境中通常仍可用)
-                  mem = subprocess.check_output("wmic OS get TotalVisibleMemorySize /Value", shell=True).decode()
-                  kb = int(mem.split('=')[1].strip())
-                  print(f"物理内存: {round(kb / 1024 / 1024, 2)} GB")
-              elif sys.platform == "linux":
-                  with open('/proc/meminfo', 'r') as f:
-                      mem = f.readline()
-                      kb = int(mem.split()[1])
-                      print(f"物理内存: {round(kb / 1024 / 1024, 2)} GB")
-              elif sys.platform == "darwin":
-                  mem = subprocess.check_output(["sysctl", "-n", "hw.memsize"]).decode().strip()
-                  print(f"物理内存: {round(int(mem) / 1024**3, 2)} GB")
-          except:
-              print("物理内存: 无法获取详细数值")
+          header("🧠 CPU 深度规格")
+          print(f"逻辑核心总数: {multiprocessing.cpu_count()}")
+          
+          if sys.platform == "linux":
+              # Linux 详细 CPU 信息
+              cpu_info = run_cmd("lscpu | grep -E 'Model name|Thread|Core|Socket|CPU MHz|cache'")
+              print(cpu_info)
+          elif sys.platform == "win32":
+              # Windows CPU 详细信息
+              cpu_name = run_cmd("wmic cpu get Name /Value").split('=')[-1]
+              cpu_speed = run_cmd("wmic cpu get MaxClockSpeed /Value").split('=')[-1]
+              print(f"型号: {cpu_name}")
+              print(f"主频: {cpu_speed} MHz")
+              print(f"二级缓存: {run_cmd('wmic cpu get L2CacheSize /Value').split('=')[-1]} KB")
+          elif sys.platform == "darwin":
+              # macOS CPU 详细信息
+              print(f"型号: {run_cmd('sysctl -n machdep.cpu.brand_string')}")
+              print(f"核心详情: {run_cmd('sysctl -a | grep machdep.cpu.core_count')}")
+              print(f"缓存大小: {run_cmd('sysctl -a | grep hw.l[123]cache')}")
 
-          # --- 1. 计算性能测试 (CPU) ---
-          print("\n" + "="*50)
-          print("🧠 测试 1: CPU 计算能力 (SHA256 x 500万次)")
-          start_time = time.perf_counter()
-          data = b"Gemini benchmark data" * 100
-          for _ in range(5_000_000):
-              hashlib.sha256(data).digest()
-          cpu_duration = time.perf_counter() - start_time
-          print(f">>> 耗时: {cpu_duration:.3f} 秒")
+          header("💾 内存与存储规格")
+          if sys.platform == "linux":
+              print(run_cmd("free -h"))
+              print(f"磁盘剩余: {run_cmd('df -h / | awk \"NR==2 {print $4}\"')}")
+          elif sys.platform == "win32":
+              mem = run_cmd("wmic OS get TotalVisibleMemorySize,FreePhysicalMemory /Value")
+              print(mem)
+              print(f"磁盘详情: {run_cmd('wmic logicaldisk get size,freespace,caption')}")
+          elif sys.platform == "darwin":
+              mem_bytes = run_cmd("sysctl -n hw.memsize")
+              print(f"总内存: {int(mem_bytes)//(1024**3)} GB")
+              print(f"磁盘剩余: {run_cmd('df -h / | awk \"NR==2 {print $4}\"')}")
 
-          # --- 2. 磁盘 IO 测试 (Disk) ---
-          print("\n" + "="*50)
-          print("💾 测试 2: 磁盘序列 IO (500MB 写入+读取)")
-          test_file = "io_test_bench.bin"
-          content = os.urandom(1024 * 1024) 
-          start_time = time.perf_counter()
-          with open(test_file, "wb") as f:
-              for _ in range(500):
-                  f.write(content)
-          with open(test_file, "rb") as f:
-              while f.read(1024 * 1024): pass
-          io_duration = time.perf_counter() - start_time
-          if os.path.exists(test_file): os.remove(test_file)
-          print(f">>> 耗时: {io_duration:.3f} 秒")
+          # --- 2. 极简性能测试 (验证硬件表现) ---
+          header("⚡ 快速性能验证 (Python 3.12)")
+          
+          # CPU 密集型
+          s = time.perf_counter()
+          [hashlib.sha256(b"data"*100).digest() for _ in range(2_000_000)]
+          print(f"CPU (SHA256 x 2M): {time.perf_counter() - s:.3f}s")
+          
+          # 内存/磁盘综合
+          s = time.perf_counter()
+          with open("test.tmp", "wb") as f: f.write(os.urandom(1024*1024*300))
+          with open("test.tmp", "rb") as f: _ = f.read()
+          os.remove("test.tmp")
+          print(f"IO (300MB Read/Write): {time.perf_counter() - s:.3f}s")
 
-          # --- 3. 内存管理测试 (RAM) ---
-          print("\n" + "="*50)
-          print("⚡ 测试 3: 内存分配速度 (1000万个对象操作)")
-          start_time = time.perf_counter()
-          container = [i for i in range(10_000_000)]
-          container.reverse()
-          del container
-          mem_duration = time.perf_counter() - start_time
-          print(f">>> 耗时: {mem_duration:.3f} 秒")
-
-          # --- 汇总结果 ---
-          print("\n" + "📊" * 15)
-          print(f"平台汇总: {matrix_os if 'matrix_os' in locals() else platform.system()}")
-          print(f"总计得分 (三项总用时): {cpu_duration + io_duration + mem_duration:.3f}s")
-          print("📊" * 15)
+          header("审计任务完成")
