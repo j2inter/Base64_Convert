@@ -1,11 +1,11 @@
-name: Professional Hardware Audit (PyPI Enhanced)
+name: PyTorch CPU Performance Benchmark
 
 on: 
   workflow_dispatch:
 
 jobs:
-  advanced-audit:
-    name: "🛠️ Audit: ${{ matrix.os }}"
+  torch-bench:
+    name: "🔥 Torch: ${{ matrix.os }}"
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -19,68 +19,66 @@ jobs:
           python-version: '3.12'
 
       - name: Install Dependencies
-        run: pip install psutil py-cpuinfo
+        run: pip install torch psutil py-cpuinfo
 
-      - name: Run Deep Audit & Benchmark
+      - name: Run PyTorch Audit & Stress Test
         shell: python
         env:
           PYTHONIOENCODING: "utf-8"
         run: |
+          import torch
+          import time
           import psutil
           import cpuinfo
-          import platform
-          import os
           import sys
-          import time
-          import hashlib
           import io
 
           # 编码修复
           if sys.platform == "win32":
               sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-          def print_box(title, content_dict):
-              print(f"\n╔{'═' * 50}╗")
-              print(f"║ {title.center(48)} ║")
-              print(f"╠{'═' * 50}╣")
-              for k, v in content_dict.items():
-                  print(f"║ {k:<20} : {v:<25} ║")
-              print(f"╚{'═' * 50}╝")
-
-          # --- 1. 深度 CPU 审计 ---
+          # --- 1. 硬件审计 ---
           info = cpuinfo.get_cpu_info()
-          cpu_data = {
-              "Brand": info.get('brand_raw', 'Unknown'),
-              "Architecture": info.get('arch', 'Unknown'),
-              "Cores (Phys/Log)": f"{psutil.cpu_count(logical=False)} / {psutil.cpu_count(logical=True)}",
-              "Frequency": f"{info.get('hz_actual_friendly', 'Unknown')}",
-              "L2 Cache": f"{info.get('l2_cache_size', 'Unknown')} bytes",
-              "L3 Cache": f"{info.get('l3_cache_size', 'Unknown')} bytes"
-          }
-          print_box("CPU 详细规格", cpu_data)
+          print(f"╔{'═'*50}╗")
+          print(f"║ 硬件审计: {info.get('brand_raw')} ║")
+          print(f"║ 核心数: {psutil.cpu_count(logical=False)}核/{psutil.cpu_count(logical=True)}线程 | PyTorch线程: {torch.get_num_threads()} ║")
+          print(f"╚{'═'*50}╝\n")
 
-          # --- 2. 内存与存储审计 ---
-          mem = psutil.virtual_memory()
-          disk = psutil.disk_usage('/')
-          mem_data = {
-              "Total RAM": f"{mem.total / (1024**3):.2f} GB",
-              "Available RAM": f"{mem.available / (1024**3):.2f} GB",
-              "Disk Total": f"{disk.total / (1024**3):.2f} GB",
-              "Disk Free": f"{disk.free / (1024**3):.2f} GB",
-              "OS Type": platform.system(),
-              "Kernel": platform.release()
-          }
-          print_box("内存与存储详情", mem_data)
+          # --- 2. 压力测试逻辑 ---
+          # 创建两个 4000x4000 的大矩阵进行乘法运算
+          size = 4000
+          a = torch.randn(size, size)
+          b = torch.randn(size, size)
 
-          # --- 3. 极速性能基准 (单核) ---
-          print("\n" + "⚡ 正在进行单核 SHA256 竞速 (5,000,000次)...")
-          start = time.perf_counter()
-          test_data = b"benchmark" * 100
-          for _ in range(5_000_000):
-              hashlib.sha256(test_data).digest()
-          duration = time.perf_counter() - start
+          results = []
           
-          # 计算一个参考分值 (假设 Linux 基准为 100)
-          score = 100 / duration 
-          print(f"🏁 完成时间: {duration:.3f} 秒")
-          print(f"📈 相对性能分值: {score:.2f}")
+          for i in range(1, 4):
+              print(f"🚀 第 {i} 轮测试开始 (持续10秒)...")
+              count = 0
+              start_time = time.time()
+              end_time = start_time + 10
+              
+              while time.time() < end_time:
+                  # 执行矩阵乘法 (核心压力)
+                  torch.mm(a, b)
+                  count += 1
+              
+              duration = time.time() - start_time
+              ops_per_sec = count / duration
+              results.append(ops_per_sec)
+              
+              print(f"✅ 第 {i} 轮完成: {ops_per_sec:.2f} 矩阵运算/秒")
+              
+              if i < 3:
+                  print(f"💤 休息 5 秒以冷却 (防止降频影响)...")
+                  time.sleep(5)
+
+          # --- 3. 汇总分析 ---
+          avg_ops = sum(results) / len(results)
+          variation = (max(results) - min(results)) / avg_ops * 100
+          
+          print(f"\n{'📊'*15}")
+          print(f"平台: {sys.platform}")
+          print(f"平均性能: {avg_ops:.2f} ops/s")
+          print(f"波动幅度: {variation:.2f}%")
+          print(f"{'📊'*15}")
