@@ -1,11 +1,11 @@
-name: PyTorch CPU Performance Benchmark
+name: NumPy CPU Benchmark (No Torch)
 
 on: 
   workflow_dispatch:
 
 jobs:
-  torch-bench:
-    name: "🔥 Torch: ${{ matrix.os }}"
+  numpy-bench:
+    name: "🔢 ${{ matrix.os }}"
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -19,66 +19,85 @@ jobs:
           python-version: '3.12'
 
       - name: Install Dependencies
-        run: pip install torch psutil py-cpuinfo
+        # 只安装轻量级的 psutil 和 cpuinfo，以及核心 numpy
+        run: pip install numpy psutil py-cpuinfo
 
-      - name: Run PyTorch Audit & Stress Test
+      - name: Run NumPy Benchmark
         shell: python
         env:
           PYTHONIOENCODING: "utf-8"
         run: |
-          import torch
+          import numpy as np
           import time
-          import psutil
-          import cpuinfo
           import sys
           import io
+          import psutil
+          import cpuinfo
+          import os
 
-          # 编码修复
+          # 编码修复 (Windows 必备)
           if sys.platform == "win32":
               sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-          # --- 1. 硬件审计 ---
-          info = cpuinfo.get_cpu_info()
-          print(f"╔{'═'*50}╗")
-          print(f"║ 硬件审计: {info.get('brand_raw')} ║")
-          print(f"║ 核心数: {psutil.cpu_count(logical=False)}核/{psutil.cpu_count(logical=True)}线程 | PyTorch线程: {torch.get_num_threads()} ║")
-          print(f"╚{'═'*50}╝\n")
+          def separator():
+              print("\n" + "═"*60)
 
-          # --- 2. 压力测试逻辑 ---
-          # 创建两个 4000x4000 的大矩阵进行乘法运算
+          # --- 1. 详细硬件审计 ---
+          separator()
+          info = cpuinfo.get_cpu_info()
+          mem = psutil.virtual_memory()
+          print(f"🖥️  硬件审计报告")
+          print(f"平台: {sys.platform} | 系统: {os.name}")
+          print(f"CPU 型号: {info.get('brand_raw', '未知')}")
+          print(f"核心架构: {info.get('arch', '未知')} | 核心数: {psutil.cpu_count(logical=False)}核/{psutil.cpu_count(logical=True)}线程")
+          print(f"物理内存: {mem.total / (1024**3):.2f} GB")
+          
+          # 检查 NumPy 到底用的是哪个加速库 (MKL/OpenBLAS/Accelerate)
+          print(f"NumPy 加速库: ", end="")
+          try:
+              # numpy 1.26+ 推荐方式
+              config = np.show_config()
+          except:
+              print("无法检测到具体后端")
+          separator()
+
+          # --- 2. NumPy 矩阵乘法压力测试 ---
+          # 设定 4000x4000 矩阵，约需 64MB 内存，既能测试 CPU 又不至于撑爆内存
           size = 4000
-          a = torch.randn(size, size)
-          b = torch.randn(size, size)
+          a = np.random.randn(size, size).astype(np.float32)
+          b = np.random.randn(size, size).astype(np.float32)
 
           results = []
-          
+          print(f"🚀 开始 NumPy 性能测试 (3轮循环)...")
+
           for i in range(1, 4):
-              print(f"🚀 第 {i} 轮测试开始 (持续10秒)...")
+              print(f"▶️  第 {i} 轮 (持续10s测试)...", end="", flush=True)
               count = 0
               start_time = time.time()
               end_time = start_time + 10
               
               while time.time() < end_time:
-                  # 执行矩阵乘法 (核心压力)
-                  torch.mm(a, b)
+                  np.dot(a, b)
                   count += 1
               
-              duration = time.time() - start_time
-              ops_per_sec = count / duration
+              actual_duration = time.time() - start_time
+              ops_per_sec = count / actual_duration
               results.append(ops_per_sec)
-              
-              print(f"✅ 第 {i} 轮完成: {ops_per_sec:.2f} 矩阵运算/秒")
+              print(f" 完成! 速度: {ops_per_sec:.2f} 矩阵运算/秒")
               
               if i < 3:
-                  print(f"💤 休息 5 秒以冷却 (防止降频影响)...")
+                  print(f"💤 冷却中 (5s)...")
                   time.sleep(5)
 
-          # --- 3. 汇总分析 ---
+          # --- 3. 结果汇总 ---
           avg_ops = sum(results) / len(results)
-          variation = (max(results) - min(results)) / avg_ops * 100
-          
-          print(f"\n{'📊'*15}")
-          print(f"平台: {sys.platform}")
+          min_ops = min(results)
+          max_ops = max(results)
+          stability = 100 - ((max_ops - min_ops) / avg_ops * 100)
+
+          separator()
+          print(f"📊 最终测试结论 (${{ matrix.os }}):")
           print(f"平均性能: {avg_ops:.2f} ops/s")
-          print(f"波动幅度: {variation:.2f}%")
-          print(f"{'📊'*15}")
+          print(f"性能稳定性: {stability:.2f}% (越高越好)")
+          print(f"最高记录: {max_ops:.2f} ops/s")
+          separator()
