@@ -1,0 +1,85 @@
+name: High-Speed 7z Split Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: '多个 URL，用逗号或分号分隔'
+        required: true
+        type: string
+      split_size:
+        description: '分卷大小 (例如: 2G, 500m)'
+        required: true
+        default: '2G'
+
+jobs:
+  process-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 关键步骤：清理磁盘空间（标准 Runner 必做）
+      - name: Free Disk Space (Ubuntu)
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aria2 p7zip-full
+
+      - name: Process Files
+        id: process
+        run: |
+          mkdir -p output_folder
+          
+          # 解析输入并循环下载
+          IFS=',;' read -r -a url_array <<< "${{ inputs.urls }}"
+          for url in "${url_array[@]}"; do
+            url=$(echo "$url" | xargs)
+            [ -z "$url" ] && continue
+
+            echo ">>> 开始下载: $url"
+            # 使用 aria2c 开启 16 线程下载，提高速度
+            aria2c -x 16 -s 16 -d ./dl_tmp --summary-interval=10 "$url"
+            
+            # 获取下载的文件名
+            FILENAME=$(ls ./dl_tmp | head -n 1)
+            SAFE_NAME=$(echo "$FILENAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
+            
+            echo ">>> 开始分卷压缩: $FILENAME"
+            # 使用 7z 压缩并分卷
+            # -v: 指定分卷大小
+            # -mx0: 仅存储（不压缩，速度最快，适合 30G 大文件）
+            7z a -v${{ inputs.split_size }} -mx0 "output_folder/${SAFE_NAME}.7z" "./dl_tmp/$FILENAME"
+            
+            # 压缩完立即删除原始文件，释放空间给下一个
+            rm -rf "./dl_tmp/$FILENAME"
+          done
+
+          # 记录第一个文件的名字作为 Tag 标识
+          FIRST_NAME=$(ls output_folder | head -n 1 | cut -d. -f1)
+          echo "tag_prefix=$FIRST_NAME" >> $GITHUB_OUTPUT
+
+      - name: Generate timestamp
+        id: time
+        run: echo "time=$(date +'%Y-%m-%d-%H-%M')" >> $GITHUB_OUTPUT
+
+      - name: Create Release and Upload
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.process.outputs.tag_prefix }}-${{ steps.time.outputs.time }}
+          name: "Batch 7z Release [Size: ${{ inputs.split_size }}]"
+          body: |
+            **Files processed successfully.**
+            - Split Size: ${{ inputs.split_size }}
+            - Engine: 7-Zip (Store Mode)
+          files: output_folder/*
