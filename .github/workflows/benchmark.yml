@@ -1,20 +1,11 @@
-name: Pure Python 3.12 Porter (Universal)
+name: Pure Python Benchmark
 
-on:
+on: 
   workflow_dispatch:
-    inputs:
-      urls:
-        description: '🔗 下载链接 (逗号或分号分隔)'
-        required: true
-        type: string
-      split_size_mb:
-        description: '📦 分卷大小 (单位: MB)'
-        required: true
-        default: '2000'
 
 jobs:
-  benchmark:
-    name: "🐍 Python 3.12 on ${{ matrix.os }}"
+  python-speed-test:
+    name: "🐍 ${{ matrix.os }}"
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -22,113 +13,78 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
-      - name: 0. Checkout
-        uses: actions/checkout@v4
-
-      - name: 1. Set up Python 3.12
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: 2. Install Python Dependencies & 7-Zip
-        shell: bash
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests tqdm
-          
-          # 仅安装 7-zip 引擎，其余逻辑全交由 Python
-          if [[ "$RUNNER_OS" == "Linux" ]]; then
-            sudo apt-get update && sudo apt-get install -y p7zip-full
-          elif [[ "$RUNNER_OS" == "macOS" ]]; then
-            brew install p7zip
-          else
-            choco install 7zip -y --no-progress
-          fi
-
-      - name: 3. Run Core Engine (Python 3.12)
+      - name: Run Benchmark Script
         shell: python
         env:
-          INPUT_URLS: ${{ inputs.urls }}
-          INPUT_SPLIT_MB: ${{ inputs.split_size_mb }}
+          PYTHONIOENCODING: "utf-8"
         run: |
-          import os
+          import time
           import sys
+          import hashlib
+          import os
+          import io
           import pathlib
-          import subprocess
-          import shutil
-          import requests
-          from hashlib import sha256
 
-          # --- 配置初始化 ---
-          urls_str = os.getenv("INPUT_URLS", "")
-          split_mb = int(os.getenv("INPUT_SPLIT_MB", "2000"))
-          GH_LIMIT = 2147483647
-          final_bytes = f"{min(split_mb * 1024 * 1024, GH_LIMIT)}b"
+          # 解决 Windows Emoji 编码问题
+          if sys.platform == "win32":
+              sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
+          def separator():
+              print("-" * 40)
+
+          print(f"🚀 开始基准测试 | 平台: {sys.platform} | 版本: {sys.version}")
           
-          curr_dir = pathlib.Path.cwd()
-          dl_dir = curr_dir / "downloads"
-          out_dir = curr_dir / "output"
-          dl_dir.mkdir(exist_ok=True)
-          out_dir.mkdir(exist_ok=True)
+          # --- 1. 计算性能测试 (CPU) ---
+          # 逻辑：进行 500 万次迭代的 SHA256 哈希计算
+          separator()
+          print("🧠 测试 1: CPU 计算能力 (SHA256 密集计算)...")
+          start_time = time.perf_counter()
+          data = b"Gemini benchmark data" * 100
+          for _ in range(5_000_000):
+              hashlib.sha256(data).hexdigest()
+          cpu_duration = time.perf_counter() - start_time
+          print(f"✅ 完成！耗时: {cpu_duration:.2f} 秒")
 
-          # --- 1. 下载引擎 (Requests + Stream) ---
-          def download_file(url, dest_folder):
-              local_filename = url.split('/')[-1].split('?')[0] or "downloaded_file"
-              path = dest_folder / local_filename
-              print(f"📡 正在下载: {url} -> {path}")
-              
-              with requests.get(url, stream=True, timeout=30) as r:
-                  r.raise_for_status()
-                  with open(path, 'wb') as f:
-                      for chunk in r.iter_content(chunk_size=8192):
-                          f.write(chunk)
-              return path
+          # --- 2. 磁盘 IO 测试 (Disk) ---
+          # 逻辑：写入并读取一个 500MB 的临时文件
+          separator()
+          print("💾 测试 2: 磁盘 IO 性能 (500MB 读写)...")
+          test_file = pathlib.Path("io_test.bin")
+          content = os.urandom(1024 * 1024) # 1MB 随机数据
+          
+          start_time = time.perf_counter()
+          # 写入
+          with open(test_file, "wb") as f:
+              for _ in range(500):
+                  f.write(content)
+          # 读取
+          with open(test_file, "rb") as f:
+              while f.read(1024 * 1024):
+                  pass
+          io_duration = time.perf_counter() - start_time
+          if test_file.exists(): test_file.unlink()
+          print(f"✅ 完成！耗时: {io_duration:.2f} 秒")
 
-          # --- 2. 查找 7-Zip 路径 ---
-          def get_7z_path():
-              path = shutil.which("7z") or shutil.which("7za")
-              if not path and sys.platform == "win32":
-                  alt = pathlib.Path("C:/Program Files/7-Zip/7z.exe")
-                  if alt.exists(): return str(alt)
-              return path or "7z"
+          # --- 3. 内存分配测试 (RAM) ---
+          # 逻辑：快速创建并销毁大量列表对象
+          separator()
+          print("⚡ 测试 3: 内存管理 (大量对象创建)...")
+          start_time = time.perf_counter()
+          container = []
+          for i in range(10_000_000):
+              container.append(i)
+          container.clear()
+          mem_duration = time.perf_counter() - start_time
+          print(f"✅ 完成！耗时: {mem_duration:.2f} 秒")
 
-          # --- 3. 执行主流程 ---
-          urls = [u.strip() for u in urls_str.replace(';', ',').split(',') if u.strip()]
-          z_exe = get_7z_path()
-
-          for url in urls:
-              try:
-                  # 下载
-                  file_path = download_file(url, dl_dir)
-                  
-                  # 计算校验和 (SHA256)
-                  print(f"🔐 计算哈希: {file_path.name}")
-                  sha = sha256()
-                  with open(file_path, "rb") as f:
-                      for chunk in iter(lambda: f.read(4096), b""):
-                          sha.update(chunk)
-                  (out_dir / f"{file_path.name}.sha256").write_text(f"{sha.hexdigest()}  {file_path.name}")
-
-                  # 压缩分卷
-                  print(f"📦 分卷压缩: {file_path.name} (大小: {final_bytes})")
-                  archive_path = out_dir / f"{file_path.name}.7z"
-                  cmd = [
-                      z_exe, "a", 
-                      f"-v{final_bytes}", 
-                      "-mx1", "-mmt=on", 
-                      str(archive_path), str(file_path)
-                  ]
-                  subprocess.run(cmd, check=True)
-                  
-                  # 清理原始文件节省空间
-                  file_path.unlink()
-                  
-              except Exception as e:
-                  print(f"❌ 处理失败 {url}: {e}")
-
-      - name: 4. Upload Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: "Python312-Bench-${{ matrix.os }}-${{ github.run_id }}"
-          name: "📊 Python 3.12 性能报告: ${{ matrix.os }}"
-          files: output/*
+          # --- 汇总结果 ---
+          separator()
+          print(f"📊 最终结果汇总 (${{ matrix.os }}):")
+          print(f"CPU: {cpu_duration:.2f}s | IO: {io_duration:.2f}s | MEM: {mem_duration:.2f}s")
+          print(f"总计得分 (越低越快): {cpu_duration + io_duration + mem_duration:.2f}s")
+          separator()
