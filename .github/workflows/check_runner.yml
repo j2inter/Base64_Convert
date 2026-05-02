@@ -1,0 +1,68 @@
+name: Explore Runner Hardware and Software
+
+on:
+  workflow_dispatch: # 手动触发
+
+jobs:
+  get-specs:
+    name: Specs on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        # 测试三种核心 Runner 类型
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Check Out Code
+        uses: actions/checkout@v4
+
+      # --- 硬件信息 ---
+      - name: CPU & Memory Information
+        shell: bash
+        run: |
+          echo "========= CPU INFO ========="
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            lscpu | grep -E "Model name|CPU\(s\)|Thread"
+          elif [[ "$RUNNER_OS" == "macOS" ]]; then
+            sysctl -n machdep.cpu.brand_string
+            sysctl -n hw.ncpu
+          else
+            wmic cpu get name, numberofcores, numberoflogicalprocessors
+          fi
+
+          echo -e "\n========= MEMORY INFO ========="
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            free -h
+          elif [[ "$RUNNER_OS" == "macOS" ]]; then
+            vm_stat | perl -ne '/page size of (\d+) bytes/ && ($s=$1); /Pages free:\s+(\d+)/ && printf("Free: %.2fGB\n", $1*$s/1024**3); /Pages active:\s+(\d+)/ && printf("Active: %.2fGB\n", $1*$s/1024**3);'
+            sysctl hw.memsize | awk '{print "Total Physical Memory: " $2/1024**3 " GB"}'
+          else
+            wmic OS get TotalVisibleMemorySize, FreePhysicalMemory /Value
+          fi
+
+      # --- 磁盘信息 ---
+      - name: Disk Space Information
+        shell: bash
+        run: |
+          echo "========= DISK INFO ========="
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            df -h | grep "C:" || wmic logicaldisk get size,freespace,caption
+          else
+            df -h /
+          fi
+
+      # --- 软件与环境信息 ---
+      - name: Software & Environment
+        shell: bash
+        run: |
+          echo "========= OS & KERNEL ========="
+          uname -a
+          
+          echo -e "\n========= PRE-INSTALLED TOOLS ========="
+          echo "Docker: $(docker --version 2>/dev/null || echo 'Not installed')"
+          echo "Python: $(python3 --version 2>/dev/null || echo 'Not installed')"
+          echo "Node.js: $(node -v 2>/dev/null || echo 'Not installed')"
+          echo "Java: $(java -version 2>&1 | head -n 1 || echo 'Not installed')"
+          
+          echo -e "\n========= ENVIRONMENT VARIABLES ========="
+          env | grep -E "GITHUB_|RUNNER_" | sort
