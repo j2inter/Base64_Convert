@@ -1,11 +1,11 @@
-name: Ultimate Python Hardware Audit
+name: Professional Hardware Audit (PyPI Enhanced)
 
 on: 
   workflow_dispatch:
 
 jobs:
-  audit-and-bench:
-    name: "🔍 Audit: ${{ matrix.os }}"
+  advanced-audit:
+    name: "🛠️ Audit: ${{ matrix.os }}"
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -18,85 +18,69 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Detailed Hardware Audit & Benchmark
+      - name: Install Dependencies
+        run: pip install psutil py-cpuinfo
+
+      - name: Run Deep Audit & Benchmark
         shell: python
         env:
           PYTHONIOENCODING: "utf-8"
         run: |
-          import subprocess
+          import psutil
+          import cpuinfo
           import platform
-          import sys
           import os
-          import io
-          import multiprocessing
+          import sys
           import time
           import hashlib
+          import io
 
-          # 强制 UTF-8 输出以支持特殊符号
+          # 编码修复
           if sys.platform == "win32":
               sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-          def run_cmd(cmd):
-              try:
-                  return subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT).decode().strip()
-              except:
-                  return "无法获取信息"
+          def print_box(title, content_dict):
+              print(f"\n╔{'═' * 50}╗")
+              print(f"║ {title.center(48)} ║")
+              print(f"╠{'═' * 50}╣")
+              for k, v in content_dict.items():
+                  print(f"║ {k:<20} : {v:<25} ║")
+              print(f"╚{'═' * 50}╝")
 
-          def header(title):
-              print(f"\n{'='*20} {title} {'='*20}")
+          # --- 1. 深度 CPU 审计 ---
+          info = cpuinfo.get_cpu_info()
+          cpu_data = {
+              "Brand": info.get('brand_raw', 'Unknown'),
+              "Architecture": info.get('arch', 'Unknown'),
+              "Cores (Phys/Log)": f"{psutil.cpu_count(logical=False)} / {psutil.cpu_count(logical=True)}",
+              "Frequency": f"{info.get('hz_actual_friendly', 'Unknown')}",
+              "L2 Cache": f"{info.get('l2_cache_size', 'Unknown')} bytes",
+              "L3 Cache": f"{info.get('l3_cache_size', 'Unknown')} bytes"
+          }
+          print_box("CPU 详细规格", cpu_data)
 
-          # --- 1. 详细硬件审计 ---
-          header("🖥️ 系统核心信息")
-          print(f"节点名称: {platform.node()}")
-          print(f"操作系统: {platform.platform()}")
-          print(f"处理器架构: {platform.processor()} ({platform.machine()})")
+          # --- 2. 内存与存储审计 ---
+          mem = psutil.virtual_memory()
+          disk = psutil.disk_usage('/')
+          mem_data = {
+              "Total RAM": f"{mem.total / (1024**3):.2f} GB",
+              "Available RAM": f"{mem.available / (1024**3):.2f} GB",
+              "Disk Total": f"{disk.total / (1024**3):.2f} GB",
+              "Disk Free": f"{disk.free / (1024**3):.2f} GB",
+              "OS Type": platform.system(),
+              "Kernel": platform.release()
+          }
+          print_box("内存与存储详情", mem_data)
+
+          # --- 3. 极速性能基准 (单核) ---
+          print("\n" + "⚡ 正在进行单核 SHA256 竞速 (5,000,000次)...")
+          start = time.perf_counter()
+          test_data = b"benchmark" * 100
+          for _ in range(5_000_000):
+              hashlib.sha256(test_data).digest()
+          duration = time.perf_counter() - start
           
-          header("🧠 CPU 深度规格")
-          print(f"逻辑核心总数: {multiprocessing.cpu_count()}")
-          
-          if sys.platform == "linux":
-              # Linux 详细 CPU 信息
-              cpu_info = run_cmd("lscpu | grep -E 'Model name|Thread|Core|Socket|CPU MHz|cache'")
-              print(cpu_info)
-          elif sys.platform == "win32":
-              # Windows CPU 详细信息
-              cpu_name = run_cmd("wmic cpu get Name /Value").split('=')[-1]
-              cpu_speed = run_cmd("wmic cpu get MaxClockSpeed /Value").split('=')[-1]
-              print(f"型号: {cpu_name}")
-              print(f"主频: {cpu_speed} MHz")
-              print(f"二级缓存: {run_cmd('wmic cpu get L2CacheSize /Value').split('=')[-1]} KB")
-          elif sys.platform == "darwin":
-              # macOS CPU 详细信息
-              print(f"型号: {run_cmd('sysctl -n machdep.cpu.brand_string')}")
-              print(f"核心详情: {run_cmd('sysctl -a | grep machdep.cpu.core_count')}")
-              print(f"缓存大小: {run_cmd('sysctl -a | grep hw.l[123]cache')}")
-
-          header("💾 内存与存储规格")
-          if sys.platform == "linux":
-              print(run_cmd("free -h"))
-              print(f"磁盘剩余: {run_cmd('df -h / | awk \"NR==2 {print $4}\"')}")
-          elif sys.platform == "win32":
-              mem = run_cmd("wmic OS get TotalVisibleMemorySize,FreePhysicalMemory /Value")
-              print(mem)
-              print(f"磁盘详情: {run_cmd('wmic logicaldisk get size,freespace,caption')}")
-          elif sys.platform == "darwin":
-              mem_bytes = run_cmd("sysctl -n hw.memsize")
-              print(f"总内存: {int(mem_bytes)//(1024**3)} GB")
-              print(f"磁盘剩余: {run_cmd('df -h / | awk \"NR==2 {print $4}\"')}")
-
-          # --- 2. 极简性能测试 (验证硬件表现) ---
-          header("⚡ 快速性能验证 (Python 3.12)")
-          
-          # CPU 密集型
-          s = time.perf_counter()
-          [hashlib.sha256(b"data"*100).digest() for _ in range(2_000_000)]
-          print(f"CPU (SHA256 x 2M): {time.perf_counter() - s:.3f}s")
-          
-          # 内存/磁盘综合
-          s = time.perf_counter()
-          with open("test.tmp", "wb") as f: f.write(os.urandom(1024*1024*300))
-          with open("test.tmp", "rb") as f: _ = f.read()
-          os.remove("test.tmp")
-          print(f"IO (300MB Read/Write): {time.perf_counter() - s:.3f}s")
-
-          header("审计任务完成")
+          # 计算一个参考分值 (假设 Linux 基准为 100)
+          score = 100 / duration 
+          print(f"🏁 完成时间: {duration:.3f} 秒")
+          print(f"📈 相对性能分值: {score:.2f}")
