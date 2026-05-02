@@ -1,11 +1,11 @@
-name: NumPy CPU Benchmark (No Torch)
+name: Ultimate Node Benchmark
 
 on: 
   workflow_dispatch:
 
 jobs:
-  numpy-bench:
-    name: "🔢 ${{ matrix.os }}"
+  node-bench:
+    name: "🚀 ${{ matrix.os }}"
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -19,10 +19,9 @@ jobs:
           python-version: '3.12'
 
       - name: Install Dependencies
-        # 只安装轻量级的 psutil 和 cpuinfo，以及核心 numpy
-        run: pip install numpy psutil py-cpuinfo
+        run: pip install numpy psutil py-cpuinfo requests
 
-      - name: Run NumPy Benchmark
+      - name: Run Comprehensive Benchmark
         shell: python
         env:
           PYTHONIOENCODING: "utf-8"
@@ -33,71 +32,80 @@ jobs:
           import io
           import psutil
           import cpuinfo
-          import os
+          import requests
+          from concurrent.futures import ThreadPoolExecutor
 
-          # 编码修复 (Windows 必备)
+          # 编码修复
           if sys.platform == "win32":
               sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-          def separator():
-              print("\n" + "═"*60)
+          def separator(title):
+              print(f"\n{'═'*20} {title} {'═'*20}")
 
-          # --- 1. 详细硬件审计 ---
-          separator()
+          # --- 1. 硬件审计 ---
+          separator("🖥️ 硬件规格")
           info = cpuinfo.get_cpu_info()
-          mem = psutil.virtual_memory()
-          print(f"🖥️  硬件审计报告")
-          print(f"平台: {sys.platform} | 系统: {os.name}")
-          print(f"CPU 型号: {info.get('brand_raw', '未知')}")
-          print(f"核心架构: {info.get('arch', '未知')} | 核心数: {psutil.cpu_count(logical=False)}核/{psutil.cpu_count(logical=True)}线程")
-          print(f"物理内存: {mem.total / (1024**3):.2f} GB")
-          
-          # 检查 NumPy 到底用的是哪个加速库 (MKL/OpenBLAS/Accelerate)
-          print(f"NumPy 加速库: ", end="")
-          try:
-              # numpy 1.26+ 推荐方式
-              config = np.show_config()
-          except:
-              print("无法检测到具体后端")
-          separator()
+          print(f"CPU: {info.get('brand_raw')} ({psutil.cpu_count()} vCPUs)")
+          print(f"RAM: {psutil.virtual_memory().total / (1024**3):.2f} GB")
 
-          # --- 2. NumPy 矩阵乘法压力测试 ---
-          # 设定 4000x4000 矩阵，约需 64MB 内存，既能测试 CPU 又不至于撑爆内存
+          # --- 2. 网络下载测试 (重点) ---
+          separator("🌐 网络带宽测试 (Global CDN)")
+          # 使用高带宽测速文件链接
+          TEST_URLS = [
+              "https://releases.ubuntu.com/22.04/ubuntu-22.04.4-desktop-amd64.iso", # Canonical
+              "https://speed.cloudflare.com/__down?bytes=1073741824",               # Cloudflare
+              "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/latest?browser=Edge" # Microsoft
+          ]
+
+          def download_worker(url, duration=10):
+              total_bytes = 0
+              start_t = time.time()
+              try:
+                  with requests.get(url, stream=True, timeout=5) as r:
+                      for chunk in r.iter_content(chunk_size=1024*256):
+                          if time.time() > start_t + duration:
+                              break
+                          if chunk:
+                              total_bytes += len(chunk)
+              except:
+                  pass
+              return total_bytes
+
+          net_results = []
+          for i in range(1, 4):
+              print(f"▶️  网络测试 第 {i} 轮 (10s并发下载)...", end="", flush=True)
+              start_t = time.perf_counter()
+              
+              # 开启多线程模拟真实带宽压榨
+              with ThreadPoolExecutor(max_workers=4) as executor:
+                  futures = [executor.submit(download_worker, url) for url in TEST_URLS]
+                  cycle_bytes = sum(f.result() for f in futures)
+              
+              actual_duration = time.perf_counter() - start_t
+              mbps = (cycle_bytes * 8) / (1024 * 1024) / actual_duration
+              net_results.append(mbps)
+              print(f" 完成! 速度: {mbps:.2f} Mbps")
+              if i < 3: time.sleep(5)
+
+          # --- 3. CPU 运算测试 (保留对比) ---
+          separator("🧠 CPU 矩阵运算测试")
           size = 4000
           a = np.random.randn(size, size).astype(np.float32)
           b = np.random.randn(size, size).astype(np.float32)
-
-          results = []
-          print(f"🚀 开始 NumPy 性能测试 (3轮循环)...")
-
+          cpu_results = []
           for i in range(1, 4):
-              print(f"▶️  第 {i} 轮 (持续10s测试)...", end="", flush=True)
-              count = 0
-              start_time = time.time()
-              end_time = start_time + 10
-              
-              while time.time() < end_time:
-                  np.dot(a, b)
-                  count += 1
-              
-              actual_duration = time.time() - start_time
-              ops_per_sec = count / actual_duration
-              results.append(ops_per_sec)
-              print(f" 完成! 速度: {ops_per_sec:.2f} 矩阵运算/秒")
-              
-              if i < 3:
-                  print(f"💤 冷却中 (5s)...")
-                  time.sleep(5)
+              print(f"▶️  CPU 测试 第 {i} 轮...", end="", flush=True)
+              cnt = 0
+              end_t = time.time() + 10
+              while time.time() < end_t:
+                  np.dot(a, b); cnt += 1
+              cpu_results.append(cnt / 10)
+              print(f" 完成! {cnt/10:.2f} ops/s")
+              if i < 3: time.sleep(5)
 
-          # --- 3. 结果汇总 ---
-          avg_ops = sum(results) / len(results)
-          min_ops = min(results)
-          max_ops = max(results)
-          stability = 100 - ((max_ops - min_ops) / avg_ops * 100)
-
-          separator()
-          print(f"📊 最终测试结论 (${{ matrix.os }}):")
-          print(f"平均性能: {avg_ops:.2f} ops/s")
-          print(f"性能稳定性: {stability:.2f}% (越高越好)")
-          print(f"最高记录: {max_ops:.2f} ops/s")
-          separator()
+          # --- 4. 汇总 ---
+          separator("📊 最终结论")
+          print(f"平台: {sys.platform}")
+          print(f"平均下载速度: {sum(net_results)/3:.2f} Mbps (约 {sum(net_results)/24:.2f} MB/s)")
+          print(f"平均计算性能: {sum(cpu_results)/3:.2f} ops/s")
+          print(f"网络波动率: {(max(net_results)-min(net_results))/(sum(net_results)/3)*100:.2f}%")
