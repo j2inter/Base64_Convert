@@ -8,15 +8,15 @@ on:
         required: true
         type: string
       output_name:
-        description: '📛 自定义保存文件名 (如 Daily_Patch_01)'
+        description: '📛 自定义保存文件名 (可选，留空则使用原名)'
         required: false
         type: string
       split_size_mb:
         description: '📦 分卷大小 (单位: MB，自动卡位 2GB 极限)'
         required: true
-        default: '2048'
+        default: '2000'
       compression_level:
-        description: '⚡ 压缩等级 (0为仅存储，1为极速压缩)'
+        description: '⚡ 压缩等级 (0为仅存储，1为极速混淆以躲避扫描)'
         required: true
         type: choice
         options:
@@ -24,12 +24,13 @@ on:
           - '1'
         default: '1'
       custom_tag:
-        description: '🏷️ 自定义 Release 标签名称'
+        description: '🏷️ 自定义 Release 标签名称 (可选)'
         required: false
         type: string
 
 jobs:
   precision-pipeline:
+    name: 🚀 工业级精密分卷流水线
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -48,7 +49,7 @@ jobs:
 
       - name: 2. Disk Space Reclamation
         run: |
-          echo "🧹 开始清理系统预装组件释放空间..."
+          echo "🧹 开始清理系统预装组件以释放空间..."
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc "/usr/local/share/boost" "$AGENT_TOOLSDIRECTORY"
           echo "📊 [清理后资源状态]"
           df -h / | awk 'NR==2{print "磁盘: 可用 "$4" / 总量 "$2}'
@@ -62,19 +63,22 @@ jobs:
       - name: 4. Geometry Calculation (Split Limit)
         id: math
         run: |
+          # 设定 GitHub 单文件上传物理极限 (2147483648 字节 - 1)
           GH_LIMIT_BYTES=2147483647
           USER_MB=${{ inputs.split_size_mb }}
+          
+          # 浮点数计算转为整数字节
           CALC_BYTES=$(echo "scale=0; ($USER_MB * 1024 * 1024) / 1" | bc)
           
           if [ "$CALC_BYTES" -ge "$GH_LIMIT_BYTES" ]; then
             FINAL_BYTES="${GH_LIMIT_BYTES}b"
-            echo "⚠️ 触发极限保护"
+            echo "⚠️ 输入大小超过 GitHub 极限，已触发极限保护卡位！"
           else
             FINAL_BYTES="${CALC_BYTES}b"
           fi
           
           echo "final_split=$FINAL_BYTES" >> $GITHUB_OUTPUT
-          echo "🎯 计算出的分卷字节: $FINAL_BYTES"
+          echo "🎯 最终确定的分卷字节数: $FINAL_BYTES"
 
       - name: 5. Parallel Data Fetching (Download)
         run: |
@@ -85,29 +89,36 @@ jobs:
           mkdir -p dl_tmp output_folder
           echo "${{ inputs.urls }}" | tr ',;' '\n' | xargs -I {} echo "{}" > list.txt
           
-          echo "🚀 开始拉取数据..."
-          # 优化了大文件的分块大小 (-k 50M) 以适应 35GB 级别传输
+          echo "🚀 开始多线程拉取数据..."
           aria2c -i list.txt -x 16 -s 16 -j 5 -k 50M -d ./dl_tmp --summary-interval=15
           
           echo "📊 [下载后资源状态]"
           df -h / | awk 'NR==2{print "磁盘: 可用 "$4}'
 
-      - name: 6. Checksum Generation (SHA256)
+      - name: 6. Checksum Generation & Renaming
         run: |
           cd dl_tmp
           for file in *; do
             [ -f "$file" ] || continue
+            
+            # 确定最终文件名
             if [ -n "${{ inputs.output_name }}" ]; then
-               FINAL_FILENAME="${{ inputs.output_name }}.${file##*.}"
+               EXTENSION="${file##*.}"
+               FINAL_FILENAME="${{ inputs.output_name }}.${EXTENSION}"
             else
                FINAL_FILENAME=$(echo "$file" | sed 's/[^a-zA-Z0-9._-]/_/g')
             fi
             
-            echo "🔐 正在生成 $FINAL_FILENAME 的 SHA256 校验码..."
+            echo "🔐 正在生成 SHA256: $file"
             sha256sum "$file" > "../output_folder/${FINAL_FILENAME}.sha256"
             
-            # 将重命名映射保存，传给下一步
-            mv "$file" "$FINAL_FILENAME"
+            # 智能重命名防撞车逻辑
+            if [ "$file" != "$FINAL_FILENAME" ]; then
+               echo "🔄 重命名: $file -> $FINAL_FILENAME"
+               mv "$file" "$FINAL_FILENAME"
+            else
+               echo "✅ 文件名无需修改，跳过重命名步骤。"
+            fi
           done
 
       - name: 7. 7-Zip Splitting Engine (CPU/IO Heavy)
@@ -120,9 +131,11 @@ jobs:
           
           for file in *; do
             [ -f "$file" ] || continue
-            echo "⚙️ 启动分卷切割: $file (模式: mx${{ inputs.compression_level }}, 大小: $FINAL_BYTES)"
+            echo "⚙️ 启动分卷切割: $file"
+            echo "   -> 模式: mx${{ inputs.compression_level }}"
+            echo "   -> 分块: $FINAL_BYTES"
             
-            # 执行核心切割
+            # 执行核心切割 (多线程全开)
             7z a -v$FINAL_BYTES -mx=${{ inputs.compression_level }} -mmt=on "../output_folder/${file}.7z" "$file"
             
             # 删除原文件释放空间
@@ -133,7 +146,7 @@ jobs:
           echo "📊 [处理后资源状态]"
           df -h / | awk 'NR==2{print "磁盘: 可用 "$4}'
 
-      - name: 8. Publish Release
+      - name: 8. Publish Release Identifier
         id: tagger
         run: |
           [ -z "${{ inputs.custom_tag }}" ] && TAG="Data-$(date +'%Y%m%d-%H%M')" || TAG="${{ inputs.custom_tag }}"
@@ -146,6 +159,7 @@ jobs:
           name: "📦 ${{ steps.tagger.outputs.final_tag }}"
           body: |
             ### 数据交付凭证
-            - **区块大小**: `${{ steps.math.outputs.final_split }}`
-            - **压缩等级**: `mx${{ inputs.compression_level }}`
+            - **物理区块大小**: `${{ steps.math.outputs.final_split }}`
+            - **混淆处理等级**: `mx${{ inputs.compression_level }}`
+            - **哈希校验说明**: 压缩包外已附带原始 `.sha256` 校验文件。
           files: output_folder/*
