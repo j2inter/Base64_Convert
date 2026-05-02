@@ -152,14 +152,29 @@ jobs:
           [ -z "${{ inputs.custom_tag }}" ] && TAG="Data-$(date +'%Y%m%d-%H%M')" || TAG="${{ inputs.custom_tag }}"
           echo "final_tag=$TAG" >> $GITHUB_OUTPUT
           
-      - name: 9. Upload to GitHub
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.tagger.outputs.final_tag }}
-          name: "📦 ${{ steps.tagger.outputs.final_tag }}"
-          body: |
-            ### 数据交付凭证
-            - **物理区块大小**: `${{ steps.math.outputs.final_split }}`
-            - **混淆处理等级**: `mx${{ inputs.compression_level }}`
-            - **哈希校验说明**: 压缩包外已附带原始 `.sha256` 校验文件。
-          files: output_folder/*
+      - name: 9. Upload to GitHub (CLI Mode)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tagger.outputs.final_tag }}"
+          BODY=$(cat <<EOF
+          ### 数据交付凭证
+          - **物理区块大小**: \`${{ steps.math.outputs.final_split }}\`
+          - **混淆处理等级**: \`mx${{ inputs.compression_level }}\`
+          - **哈希校验说明**: 压缩包外已附带原始 \`.sha256\` 校验文件。
+          EOF
+          )
+
+          echo "🚀 正在通过 GitHub CLI 创建 Release: $TAG"
+          gh release create "$TAG" \
+            --title "📦 $TAG" \
+            --notes "$BODY" \
+            --target "$GITHUB_SHA"
+
+          echo "📤 开始逐个上传分卷文件..."
+          # 使用循环上传可以有效避免单次上传过多文件导致的超时
+          for file in output_folder/*; do
+            echo "正在上传: $file"
+            gh release upload "$TAG" "$file" --clobber
+          done
+          echo "🎉 所有数据已成功交付！"
