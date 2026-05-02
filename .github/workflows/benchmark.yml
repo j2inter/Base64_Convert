@@ -1,4 +1,4 @@
-name: Granular Data Porter (Universal Python Edition)
+name: Pure Python 3.12 Porter (Universal)
 
 on:
   workflow_dispatch:
@@ -14,98 +14,121 @@ on:
 
 jobs:
   benchmark:
-    name: "🏁 竞速: ${{ matrix.os }}"
+    name: "🐍 Python 3.12 on ${{ matrix.os }}"
     runs-on: ${{ matrix.os }}
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
-      - name: 0. Checkout Repository
+      - name: 0. Checkout
         uses: actions/checkout@v4
 
-      - name: 1. Set up Python
+      - name: 1. Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12'
 
-      - name: 2. Install Tools (Native)
+      - name: 2. Install Python Dependencies & 7-Zip
         shell: bash
         run: |
+          python -m pip install --upgrade pip
+          pip install requests tqdm
+          
+          # 仅安装 7-zip 引擎，其余逻辑全交由 Python
           if [[ "$RUNNER_OS" == "Linux" ]]; then
-            sudo apt-get update && sudo apt-get install -y aria2 p7zip-full
+            sudo apt-get update && sudo apt-get install -y p7zip-full
           elif [[ "$RUNNER_OS" == "macOS" ]]; then
-            brew install aria2 p7zip
+            brew install p7zip
           else
-            choco install aria2 7zip -y --no-progress
+            choco install 7zip -y --no-progress
           fi
 
-      - name: 3. Execute Python Core Engine
+      - name: 3. Run Core Engine (Python 3.12)
         shell: python
+        env:
+          INPUT_URLS: ${{ inputs.urls }}
+          INPUT_SPLIT_MB: ${{ inputs.split_size_mb }}
         run: |
           import os
-          import subprocess
           import sys
           import pathlib
+          import subprocess
           import shutil
+          import requests
+          from hashlib import sha256
 
-          # --- 1. 参数解析 ---
-          urls_raw = """${{ inputs.urls }}"""
-          split_mb = int("${{ inputs.split_size_mb }}")
-          
-          # 计算字节 (GitHub 极限是 2147483647 字节)
+          # --- 配置初始化 ---
+          urls_str = os.getenv("INPUT_URLS", "")
+          split_mb = int(os.getenv("INPUT_SPLIT_MB", "2000"))
           GH_LIMIT = 2147483647
-          calc_bytes = split_mb * 1024 * 1024
-          final_bytes = f"{min(calc_bytes, GH_LIMIT)}b"
+          final_bytes = f"{min(split_mb * 1024 * 1024, GH_LIMIT)}b"
           
-          print(f"🚀 启动任务 | 平台: {sys.platform} | 分卷大小: {final_bytes}")
-
-          # --- 2. 准备目录 ---
           curr_dir = pathlib.Path.cwd()
-          dl_dir = curr_dir / "dl_tmp"
-          out_dir = curr_dir / "output_folder"
+          dl_dir = curr_dir / "downloads"
+          out_dir = curr_dir / "output"
           dl_dir.mkdir(exist_ok=True)
           out_dir.mkdir(exist_ok=True)
 
-          # --- 3. 下载文件 ---
-          urls = [u.strip() for u in urls_raw.replace(';', ',').split(',') if u.strip()]
-          list_file = dl_dir / "list.txt"
-          list_file.write_text("\n".join(urls))
-          
-          print("📡 正在拉取数据...")
-          aria_cmd = ["aria2c", "-i", str(list_file), "-x", "16", "-s", "16", "-d", str(dl_dir)]
-          subprocess.run(aria_cmd, check=True)
+          # --- 1. 下载引擎 (Requests + Stream) ---
+          def download_file(url, dest_folder):
+              local_filename = url.split('/')[-1].split('?')[0] or "downloaded_file"
+              path = dest_folder / local_filename
+              print(f"📡 正在下载: {url} -> {path}")
+              
+              with requests.get(url, stream=True, timeout=30) as r:
+                  r.raise_for_status()
+                  with open(path, 'wb') as f:
+                      for chunk in r.iter_content(chunk_size=8192):
+                          f.write(chunk)
+              return path
 
-          # --- 4. 寻找 7z 命令 ---
-          # Windows 通常是 7z, macOS/Linux 可能是 7z 或 7za
-          z_cmd = shutil.which("7z") or shutil.which("7za")
-          if not z_cmd:
-              # Windows 特殊处理：如果 choco 没写进 PATH，尝试默认路径
-              win_path = r"C:\Program Files\7-Zip\7z.exe"
-              z_cmd = win_path if os.path.exists(win_path) else "7z"
+          # --- 2. 查找 7-Zip 路径 ---
+          def get_7z_path():
+              path = shutil.which("7z") or shutil.which("7za")
+              if not path and sys.platform == "win32":
+                  alt = pathlib.Path("C:/Program Files/7-Zip/7z.exe")
+                  if alt.exists(): return str(alt)
+              return path or "7z"
 
-          # --- 5. 压缩与切割 ---
-          for file_path in dl_dir.iterdir():
-              if file_path.is_file() and file_path.name != "list.txt":
-                  print(f"📦 正在处理: {file_path.name}")
-                  # 构建 7z 命令
-                  # a: 压缩, -v: 分卷, -mx1: 极速, -mmt=on: 多线程
-                  archive_out = out_dir / f"{file_path.name}.7z"
+          # --- 3. 执行主流程 ---
+          urls = [u.strip() for u in urls_str.replace(';', ',').split(',') if u.strip()]
+          z_exe = get_7z_path()
+
+          for url in urls:
+              try:
+                  # 下载
+                  file_path = download_file(url, dl_dir)
+                  
+                  # 计算校验和 (SHA256)
+                  print(f"🔐 计算哈希: {file_path.name}")
+                  sha = sha256()
+                  with open(file_path, "rb") as f:
+                      for chunk in iter(lambda: f.read(4096), b""):
+                          sha.update(chunk)
+                  (out_dir / f"{file_path.name}.sha256").write_text(f"{sha.hexdigest()}  {file_path.name}")
+
+                  # 压缩分卷
+                  print(f"📦 分卷压缩: {file_path.name} (大小: {final_bytes})")
+                  archive_path = out_dir / f"{file_path.name}.7z"
                   cmd = [
-                      z_cmd, "a", 
+                      z_exe, "a", 
                       f"-v{final_bytes}", 
                       "-mx1", "-mmt=on", 
-                      str(archive_out), str(file_path)
+                      str(archive_path), str(file_path)
                   ]
                   subprocess.run(cmd, check=True)
-                  print(f"✅ {file_path.name} 处理完成")
+                  
+                  # 清理原始文件节省空间
+                  file_path.unlink()
+                  
+              except Exception as e:
+                  print(f"❌ 处理失败 {url}: {e}")
 
-      - name: 4. Upload to Release
+      - name: 4. Upload Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "Bench-${{ matrix.os }}-${{ github.run_id }}"
-          name: "📊 性能报告: ${{ matrix.os }}"
-          files: output_folder/*
+          tag_name: "Python312-Bench-${{ matrix.os }}-${{ github.run_id }}"
+          name: "📊 Python 3.12 性能报告: ${{ matrix.os }}"
+          files: output/*
