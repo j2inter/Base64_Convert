@@ -1,0 +1,109 @@
+name: Granular Data Porter (Cross-Platform Benchmark)
+
+on:
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: '🔗 下载链接 (用逗号分隔)'
+        required: true
+        type: string
+      split_size_mb:
+        description: '📦 分卷大小 (单位: MB)'
+        required: true
+        default: '2000'
+
+jobs:
+  speed-test:
+    name: 🏁 竞速: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false # 必须配置：防止某个系统失败导致其他系统被取消
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: 0. Checkout Repository
+        uses: actions/checkout@v4
+
+      # ==========================================
+      #   Linux & macOS 统一处理流 (Bash Shell)
+      # ==========================================
+      - name: 🛠️ 核心引擎运转 (Unix/Mac)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          echo ">>> 1. 部署工具链 <<<"
+          if [ "$RUNNER_OS" == "Linux" ]; then
+            sudo apt-get update -qq && sudo apt-get install -y aria2 p7zip-full > /dev/null
+          else
+            brew install aria2 p7zip > /dev/null
+          fi
+          
+          echo -e "\n>>> 2. 物理极限界定 <<<"
+          GH_LIMIT_BYTES=2147483647
+          USER_MB=${{ inputs.split_size_mb }}
+          CALC_BYTES=$((USER_MB * 1024 * 1024))
+          if [ "$CALC_BYTES" -ge "$GH_LIMIT_BYTES" ]; then 
+            FINAL_BYTES="${GH_LIMIT_BYTES}b"
+          else 
+            FINAL_BYTES="${CALC_BYTES}b"
+          fi
+          echo "分卷大小设定为: $FINAL_BYTES"
+          
+          echo -e "\n>>> 3. 并发拉取数据 <<<"
+          mkdir -p dl_tmp output_folder
+          echo "${{ inputs.urls }}" | tr ',' '\n' | awk 'NF' > dl_tmp/list.txt
+          cd dl_tmp
+          aria2c -i list.txt -x 16 -s 16 -j 5 -k 50M
+          
+          echo -e "\n>>> 4. 极限切割与压缩 <<<"
+          for file in *; do
+            [ -f "$file" ] && [ "$file" != "list.txt" ] || continue
+            echo "正在处理: $file"
+            7z a -v$FINAL_BYTES -mx=1 -mmt=on "../output_folder/${file}.7z" "$file"
+          done
+
+      # ==========================================
+      #   Windows 专用处理流 (PowerShell)
+      # ==========================================
+      - name: 🛠️ 核心引擎运转 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Write-Host ">>> 1. 部署工具链 <<<" -ForegroundColor Cyan
+          choco install aria2 7zip -y --no-progress | Out-Null
+          
+          Write-Host "`n>>> 2. 物理极限界定 <<<" -ForegroundColor Cyan
+          $GH_LIMIT = 2147483647
+          $CALC = [long](${{ inputs.split_size_mb }} * 1024 * 1024)
+          if ($CALC -ge $GH_LIMIT) { $FINAL_BYTES = "${GH_LIMIT}b" } else { $FINAL_BYTES = "${CALC}b" }
+          Write-Host "分卷大小设定为: $FINAL_BYTES"
+          
+          Write-Host "`n>>> 3. 并发拉取数据 <<<" -ForegroundColor Cyan
+          New-Item -ItemType Directory -Force -Path dl_tmp, output_folder | Out-Null
+          "${{ inputs.urls }}" -split "," | Where-Object { $_.Trim() -ne "" } | Out-File -FilePath dl_tmp\list.txt -Encoding ascii
+          Set-Location dl_tmp
+          aria2c -i list.txt -x 16 -s 16 -j 5 -k 50M
+          
+          Write-Host "`n>>> 4. 极限切割与压缩 <<<" -ForegroundColor Cyan
+          $files = Get-ChildItem -File | Where-Object { $_.Name -ne 'list.txt' }
+          foreach ($file in $files) {
+            Write-Host "正在处理: $($file.Name)"
+            & 7z a -v$FINAL_BYTES -mx=1 -mmt=on "..\output_folder\$($file.Name).7z" $file.FullName
+          }
+
+      # ==========================================
+      #   并行打包与交付
+      # ==========================================
+      - name: 🚀 交付多平台测试成果
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "Bench-${{ matrix.os }}-${{ github.run_id }}"
+          name: "📊 性能报告: ${{ matrix.os }}"
+          body: |
+            ### 跨平台基准测试完成
+            - **测试环境**: `${{ matrix.os }}`
+            - **构建耗时**: 请前往 GitHub Actions 控制台查看该 Job 的总持续时间。
+          files: output_folder/*
