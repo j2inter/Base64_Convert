@@ -1,68 +1,66 @@
-name: Explore Runner Hardware and Software
+name: Runner Specs (Mobile Friendly)
 
-on:
-  workflow_dispatch: # 手动触发
+on: workflow_dispatch
 
 jobs:
   get-specs:
-    name: Specs on ${{ matrix.os }}
+    name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        # 测试三种核心 Runner 类型
         os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
-      - name: Check Out Code
-        uses: actions/checkout@v4
-
-      # --- 硬件信息 ---
-      - name: CPU & Memory Information
+      - name: CPU & RAM Info
         shell: bash
         run: |
-          echo "========= CPU INFO ========="
+          echo "---------------------------------------"
+          echo "  >>> OS: $RUNNER_OS SPEC <<<"
+          echo "---------------------------------------"
+          
           if [[ "$RUNNER_OS" == "Linux" ]]; then
-            lscpu | grep -E "Model name|CPU\(s\)|Thread"
+            echo "[CPU]"
+            lscpu | grep -E "Model name|CPU\(s\)"
+            echo -e "\n[Memory]"
+            free -h | awk 'NR==1 || NR==2'
+            
           elif [[ "$RUNNER_OS" == "macOS" ]]; then
+            echo "[CPU]"
             sysctl -n machdep.cpu.brand_string
-            sysctl -n hw.ncpu
+            echo "Cores: $(sysctl -n hw.ncpu)"
+            echo -e "\n[Memory]"
+            echo "Total: $(($(sysctl -n hw.memsize) / 1024**3)) GB"
+            
           else
-            wmic cpu get name, numberofcores, numberoflogicalprocessors
+            echo "Skipping Bash for Windows hardware info..."
           fi
 
-          echo -e "\n========= MEMORY INFO ========="
-          if [[ "$RUNNER_OS" == "Linux" ]]; then
-            free -h
-          elif [[ "$RUNNER_OS" == "macOS" ]]; then
-            vm_stat | perl -ne '/page size of (\d+) bytes/ && ($s=$1); /Pages free:\s+(\d+)/ && printf("Free: %.2fGB\n", $1*$s/1024**3); /Pages active:\s+(\d+)/ && printf("Active: %.2fGB\n", $1*$s/1024**3);'
-            sysctl hw.memsize | awk '{print "Total Physical Memory: " $2/1024**3 " GB"}'
-          else
-            wmic OS get TotalVisibleMemorySize, FreePhysicalMemory /Value
-          fi
+      - name: Windows Hardware (PowerShell)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Write-Host "---------------------------------------" -ForegroundColor Cyan
+          Write-Host "  >>> WINDOWS HARDWARE INFO <<<"
+          Write-Host "---------------------------------------"
+          Write-Host "[CPU]"
+          Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors | Format-List
+          Write-Host "[Memory]"
+          $mem = Get-CimInstance Win32_OperatingSystem
+          $total = [math]::round($mem.TotalVisibleMemorySize / 1MB, 2)
+          $free = [math]::round($mem.FreePhysicalMemory / 1MB, 2)
+          Write-Host "Total: $total GB"
+          Write-Host "Free:  $free GB"
 
-      # --- 磁盘信息 ---
-      - name: Disk Space Information
+      - name: Disk & Software
         shell: bash
         run: |
-          echo "========= DISK INFO ========="
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            df -h | grep "C:" || wmic logicaldisk get size,freespace,caption
-          else
-            df -h /
-          fi
-
-      # --- 软件与环境信息 ---
-      - name: Software & Environment
-        shell: bash
-        run: |
-          echo "========= OS & KERNEL ========="
-          uname -a
+          echo "---------------------------------------"
+          echo "  >>> DISK & TOOLS <<<"
+          echo "---------------------------------------"
+          echo "[Disk Space]"
+          df -h . | awk 'NR==1 || NR==2'
           
-          echo -e "\n========= PRE-INSTALLED TOOLS ========="
-          echo "Docker: $(docker --version 2>/dev/null || echo 'Not installed')"
-          echo "Python: $(python3 --version 2>/dev/null || echo 'Not installed')"
-          echo "Node.js: $(node -v 2>/dev/null || echo 'Not installed')"
-          echo "Java: $(java -version 2>&1 | head -n 1 || echo 'Not installed')"
-          
-          echo -e "\n========= ENVIRONMENT VARIABLES ========="
-          env | grep -E "GITHUB_|RUNNER_" | sort
+          echo -e "\n[Versions]"
+          printf "Node:   %-10s\n" "$(node -v)"
+          printf "Python: %-10s\n" "$(python3 -V | awk '{print $2}')"
+          printf "Docker: %-10s\n" "$(docker -v | awk '{print $3}' | sed 's/,//')"
