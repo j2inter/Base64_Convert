@@ -1,0 +1,192 @@
+name: Granular Data Porter (Windows Edition)
+
+on:
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: '🔗 下载链接 (用分号或逗号分隔)'
+        required: true
+        type: string
+      output_name:
+        description: '📛 自定义保存文件名 (可选，留空则使用原名)'
+        required: false
+        type: string
+      split_size_mb:
+        description: '📦 分卷大小 (单位: MB，自动卡位 2GB 极限)'
+        required: true
+        default: '2000'
+      compression_level:
+        description: '⚡ 压缩等级 (0为仅存储，1为极速混淆以躲避扫描)'
+        required: true
+        type: choice
+        options:
+          - '0'
+          - '1'
+        default: '1'
+      custom_tag:
+        description: '🏷️ 自定义 Release 标签名称 (可选)'
+        required: false
+        type: string
+
+jobs:
+  precision-pipeline-win:
+    name: 🚀 工业级精密分卷流水线 (Win)
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    # 强制所有未指定的步骤默认使用 PowerShell Core
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: 0. Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 1. System Pre-flight & Audit
+        run: |
+          Write-Host "🖥️ CPU 型号: $((Get-CimInstance Win32_Processor).Name)"
+          Write-Host "📊 [初始资源状态]"
+          
+          $mem = Get-CimInstance Win32_OperatingSystem
+          $memTotal = [math]::Round($mem.TotalVisibleMemorySize / 1MB, 2)
+          $memFree = [math]::Round($mem.FreePhysicalMemory / 1MB, 2)
+          $memUsed = $memTotal - $memFree
+          Write-Host "内存: 已用 ${memUsed}GB / 总计 ${memTotal}GB"
+          
+          $drive = Get-Volume -DriveLetter C
+          $diskTotal = [math]::Round($drive.Size / 1GB, 2)
+          $diskFree = [math]::Round($drive.SizeRemaining / 1GB, 2)
+          Write-Host "磁盘: 可用 ${diskFree}GB / 总量 ${diskTotal}GB"
+          Write-Host "----------------------------------------"
+
+      - name: 2. Disk Space Reclamation
+        run: |
+          Write-Host "🧹 开始清理系统预装组件以释放空间 (Windows版)..."
+          # 移除 Windows Runner 上占用大量空间且通常不需要的组件库
+          $targets = @("C:\android", "C:\hostedtoolcache\windows")
+          foreach ($target in $targets) {
+              if (Test-Path $target) {
+                  Remove-Item -Recurse -Force $target -ErrorAction SilentlyContinue
+              }
+          }
+          
+          $drive = Get-Volume -DriveLetter C
+          $diskFree = [math]::Round($drive.SizeRemaining / 1GB, 2)
+          Write-Host "📊 [清理后资源状态]"
+          Write-Host "磁盘: 可用 ${diskFree}GB"
+          Write-Host "----------------------------------------"
+
+      - name: 3. Install Industrial Toolchain
+        run: |
+          Write-Host "🔧 正在通过 Chocolatey 安装 aria2 和 7zip..."
+          choco install aria2 7zip -y --no-progress
+          Write-Host "✅ 工具链安装完毕"
+
+      - name: 4. Geometry Calculation (Split Limit)
+        id: math
+        run: |
+          # 设定 GitHub 单文件上传物理极限 (2147483648 字节 - 1)
+          $GH_LIMIT_BYTES = 2147483647
+          $USER_MB = [double]"${{ inputs.split_size_mb }}"
+          
+          # 计算为整数字节
+          $CALC_BYTES = [long]($USER_MB * 1024 * 1024)
+          
+          if ($CALC_BYTES -ge $GH_LIMIT_BYTES) {
+            $FINAL_BYTES = "${GH_LIMIT_BYTES}b"
+            Write-Host "⚠️ 输入大小超过 GitHub 极限，已触发极限保护卡位！"
+          } else {
+            $FINAL_BYTES = "${CALC_BYTES}b"
+          }
+          
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "final_split=$FINAL_BYTES"
+          Write-Host "🎯 最终确定的分卷字节数: $FINAL_BYTES"
+
+      - name: 5. Parallel Data Fetching (Download)
+        run: |
+          New-Item -ItemType Directory -Force -Path dl_tmp | Out-Null
+          New-Item -ItemType Directory -Force -Path output_folder | Out-Null
+          
+          # 处理链接列表
+          $urls = "${{ inputs.urls }}" -split "[,;]" | Where-Object { $_.Trim() -ne "" }
+          $urls | Out-File -FilePath list.txt -Encoding ascii
+          
+          Write-Host "🚀 开始多线程拉取数据..."
+          aria2c -i list.txt -x 16 -s 16 -j 5 -k 50M -d .\dl_tmp --summary-interval=15
+          
+          $drive = Get-Volume -DriveLetter C
+          Write-Host "📊 [下载后磁盘可用]: $([math]::Round($drive.SizeRemaining / 1GB, 2)) GB"
+
+      - name: 6. Checksum Generation & Renaming
+        run: |
+          Set-Location dl_tmp
+          $files = Get-ChildItem -File
+          
+          foreach ($file in $files) {
+            $ext = $file.Extension
+            
+            # 确定最终文件名
+            if ([string]::IsNullOrWhiteSpace("${{ inputs.output_name }}")) {
+               # 智能重命名：替换掉不安全的字符
+               $FINAL_FILENAME = $file.Name -replace '[^a-zA-Z0-9._-]', '_'
+            } else {
+               $FINAL_FILENAME = "${{ inputs.output_name }}$ext"
+            }
+            
+            Write-Host "🔐 正在生成 SHA256: $($file.Name)"
+            $hashString = (Get-FileHash -Path $file.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hashString  $FINAL_FILENAME" | Out-File -FilePath "..\output_folder\$FINAL_FILENAME.sha256" -Encoding ascii
+            
+            if ($file.Name -cne $FINAL_FILENAME) {
+               Write-Host "🔄 重命名: $($file.Name) -> $FINAL_FILENAME"
+               Rename-Item -Path $file.FullName -NewName $FINAL_FILENAME
+            } else {
+               Write-Host "✅ 文件名无需修改，跳过重命名步骤。"
+            }
+          }
+
+      - name: 7. 7-Zip Splitting Engine (CPU/IO Heavy)
+        run: |
+          Set-Location dl_tmp
+          $FINAL_BYTES = "${{ steps.math.outputs.final_split }}"
+          $files = Get-ChildItem -File
+          
+          foreach ($file in $files) {
+            Write-Host "⚙️ 启动分卷切割: $($file.Name)"
+            Write-Host "   -> 模式: mx${{ inputs.compression_level }}"
+            Write-Host "   -> 分块: $FINAL_BYTES"
+            
+            # 执行核心切割 (调用 7z)
+            & 7z a -v$FINAL_BYTES -mx=${{ inputs.compression_level }} -mmt=on "..\output_folder\$($file.Name).7z" $file.FullName
+            
+            # 删除原文件释放空间
+            Remove-Item -Path $file.FullName -Force
+            Write-Host "🗑️ 已清理原始文件，释放磁盘。"
+          }
+          
+          $drive = Get-Volume -DriveLetter C
+          Write-Host "📊 [处理后磁盘可用]: $([math]::Round($drive.SizeRemaining / 1GB, 2)) GB"
+
+      - name: 8. Publish Release Identifier
+        id: tagger
+        run: |
+          $customTag = "${{ inputs.custom_tag }}"
+          if ([string]::IsNullOrWhiteSpace($customTag)) {
+            $TAG = "Data-$(Get-Date -Format 'yyyyMMdd-HHmm')"
+          } else {
+            $TAG = $customTag
+          }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "final_tag=$TAG"
+          
+      - name: 9. Upload to GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tagger.outputs.final_tag }}
+          name: "📦 ${{ steps.tagger.outputs.final_tag }}"
+          body: |
+            ### 数据交付凭证 (Windows Node)
+            - **物理区块大小**: `${{ steps.math.outputs.final_split }}`
+            - **混淆处理等级**: `mx${{ inputs.compression_level }}`
+            - **哈希校验说明**: 压缩包外已附带原始 `.sha256` 校验文件。
+          files: output_folder/*
