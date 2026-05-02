@@ -1,10 +1,10 @@
-name: Granular Data Porter (Cross-Platform Benchmark)
+name: Granular Data Porter (Universal Python Edition)
 
 on:
   workflow_dispatch:
     inputs:
       urls:
-        description: '🔗 下载链接 (用逗号分隔)'
+        description: '🔗 下载链接 (逗号或分号分隔)'
         required: true
         type: string
       split_size_mb:
@@ -13,7 +13,7 @@ on:
         default: '2000'
 
 jobs:
-  speed-test:
+  benchmark:
     name: "🏁 竞速: ${{ matrix.os }}"
     runs-on: ${{ matrix.os }}
     permissions:
@@ -27,66 +27,83 @@ jobs:
       - name: 0. Checkout Repository
         uses: actions/checkout@v4
 
-      # Unix 平台逻辑 (Ubuntu & macOS)
-      - name: "🛠️ 核心引擎运转 (Unix/Mac)"
-        if: runner.os != 'Windows'
+      - name: 1. Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 2. Install Tools (Native)
         shell: bash
         run: |
-          echo ">>> 1. 部署工具链 <<<"
-          if [ "$RUNNER_OS" == "Linux" ]; then
-            sudo apt-get update -qq && sudo apt-get install -y aria2 p7zip-full > /dev/null
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            sudo apt-get update && sudo apt-get install -y aria2 p7zip-full
+          elif [[ "$RUNNER_OS" == "macOS" ]]; then
+            brew install aria2 p7zip
           else
-            brew install aria2 p7zip > /dev/null
+            choco install aria2 7zip -y --no-progress
           fi
-          
-          echo ">>> 2. 物理极限界定 <<<"
-          GH_LIMIT_BYTES=2147483647
-          USER_MB=${{ inputs.split_size_mb }}
-          CALC_BYTES=$((USER_MB * 1024 * 1024))
-          if [ "$CALC_BYTES" -ge "$GH_LIMIT_BYTES" ]; then 
-            FINAL_BYTES="${GH_LIMIT_BYTES}b"
-          else 
-            FINAL_BYTES="${CALC_BYTES}b"
-          fi
-          
-          echo ">>> 3. 并发拉取数据 <<<"
-          mkdir -p dl_tmp output_folder
-          echo "${{ inputs.urls }}" | tr ',' '\n' | awk 'NF' > dl_tmp/list.txt
-          cd dl_tmp
-          aria2c -i list.txt -x 16 -s 16 -j 5 -k 50M
-          
-          echo ">>> 4. 极限切割与压缩 <<<"
-          for file in *; do
-            [ -f "$file" ] && [ "$file" != "list.txt" ] || continue
-            7z a -v$FINAL_BYTES -mx=1 -mmt=on "../output_folder/${file}.7z" "$file"
-          done
 
-      # Windows 平台逻辑
-      - name: "🛠️ 核心引擎运转 (Windows)"
-        if: runner.os == 'Windows'
-        shell: pwsh
+      - name: 3. Execute Python Core Engine
+        shell: python
         run: |
-          Write-Host ">>> 1. 部署工具链 <<<"
-          choco install aria2 7zip -y --no-progress | Out-Null
-          
-          Write-Host ">>> 2. 物理极限界定 <<<"
-          $GH_LIMIT = 2147483647
-          $CALC = [long](${{ inputs.split_size_mb }} * 1024 * 1024)
-          if ($CALC -ge $GH_LIMIT) { $FINAL_BYTES = "${GH_LIMIT}b" } else { $FINAL_BYTES = "${CALC}b" }
-          
-          Write-Host ">>> 3. 并发拉取数据 <<<"
-          New-Item -ItemType Directory -Force -Path dl_tmp, output_folder | Out-Null
-          "${{ inputs.urls }}" -split "," | Where-Object { $_.Trim() -ne "" } | Out-File -FilePath dl_tmp\list.txt -Encoding ascii
-          Set-Location dl_tmp
-          aria2c -i list.txt -x 16 -s 16 -j 5 -k 50M
-          
-          Write-Host ">>> 4. 极限切割与压缩 <<<"
-          $files = Get-ChildItem -File | Where-Object { $_.Name -ne 'list.txt' }
-          foreach ($file in $files) {
-            & 7z a -v$FINAL_BYTES -mx=1 -mmt=on "..\output_folder\$($file.Name).7z" $file.FullName
-          }
+          import os
+          import subprocess
+          import sys
+          import pathlib
+          import shutil
 
-      - name: "🚀 交付多平台测试成果"
+          # --- 1. 参数解析 ---
+          urls_raw = """${{ inputs.urls }}"""
+          split_mb = int("${{ inputs.split_size_mb }}")
+          
+          # 计算字节 (GitHub 极限是 2147483647 字节)
+          GH_LIMIT = 2147483647
+          calc_bytes = split_mb * 1024 * 1024
+          final_bytes = f"{min(calc_bytes, GH_LIMIT)}b"
+          
+          print(f"🚀 启动任务 | 平台: {sys.platform} | 分卷大小: {final_bytes}")
+
+          # --- 2. 准备目录 ---
+          curr_dir = pathlib.Path.cwd()
+          dl_dir = curr_dir / "dl_tmp"
+          out_dir = curr_dir / "output_folder"
+          dl_dir.mkdir(exist_ok=True)
+          out_dir.mkdir(exist_ok=True)
+
+          # --- 3. 下载文件 ---
+          urls = [u.strip() for u in urls_raw.replace(';', ',').split(',') if u.strip()]
+          list_file = dl_dir / "list.txt"
+          list_file.write_text("\n".join(urls))
+          
+          print("📡 正在拉取数据...")
+          aria_cmd = ["aria2c", "-i", str(list_file), "-x", "16", "-s", "16", "-d", str(dl_dir)]
+          subprocess.run(aria_cmd, check=True)
+
+          # --- 4. 寻找 7z 命令 ---
+          # Windows 通常是 7z, macOS/Linux 可能是 7z 或 7za
+          z_cmd = shutil.which("7z") or shutil.which("7za")
+          if not z_cmd:
+              # Windows 特殊处理：如果 choco 没写进 PATH，尝试默认路径
+              win_path = r"C:\Program Files\7-Zip\7z.exe"
+              z_cmd = win_path if os.path.exists(win_path) else "7z"
+
+          # --- 5. 压缩与切割 ---
+          for file_path in dl_dir.iterdir():
+              if file_path.is_file() and file_path.name != "list.txt":
+                  print(f"📦 正在处理: {file_path.name}")
+                  # 构建 7z 命令
+                  # a: 压缩, -v: 分卷, -mx1: 极速, -mmt=on: 多线程
+                  archive_out = out_dir / f"{file_path.name}.7z"
+                  cmd = [
+                      z_cmd, "a", 
+                      f"-v{final_bytes}", 
+                      "-mx1", "-mmt=on", 
+                      str(archive_out), str(file_path)
+                  ]
+                  subprocess.run(cmd, check=True)
+                  print(f"✅ {file_path.name} 处理完成")
+
+      - name: 4. Upload to Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "Bench-${{ matrix.os }}-${{ github.run_id }}"
