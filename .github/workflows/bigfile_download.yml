@@ -76,7 +76,7 @@ jobs:
             # -mx=3: 快速压缩模式（稍微压缩，不只是存档）
             # -mmt=on: 开启多线程，压榨 EPYC 性能
             # -v: 自动分卷
-            7z a -v${{ inputs.split_size }} -mx=3 -mmt=on "../output_folder/${SAFE_NAME}.7z" "$file"
+            7z a -v${{ inputs.split_size }} -mx=0 -mmt=on "../output_folder/${SAFE_NAME}.7z" "$file"
           done
           
           # 获取第一个文件的名称作为 Tag 识别码
