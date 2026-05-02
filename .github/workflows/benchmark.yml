@@ -1,4 +1,4 @@
-name: Ultimate Node Benchmark
+name: Ultimate Node Benchmark (ModelScope Edition)
 
 on: 
   workflow_dispatch:
@@ -35,7 +35,6 @@ jobs:
           import requests
           from concurrent.futures import ThreadPoolExecutor
 
-          # 编码修复
           if sys.platform == "win32":
               sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
@@ -48,46 +47,49 @@ jobs:
           print(f"CPU: {info.get('brand_raw')} ({psutil.cpu_count()} vCPUs)")
           print(f"RAM: {psutil.virtual_memory().total / (1024**3):.2f} GB")
 
-          # --- 2. 网络下载测试 (重点) ---
-          separator("🌐 网络带宽测试 (Global CDN)")
-          # 使用高带宽测速文件链接
-          TEST_URLS = [
-              "https://releases.ubuntu.com/22.04/ubuntu-22.04.4-desktop-amd64.iso", # Canonical
-              "https://speed.cloudflare.com/__down?bytes=1073741824",               # Cloudflare
-              "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/latest?browser=Edge" # Microsoft
-          ]
-
-          def download_worker(url, duration=10):
-              total_bytes = 0
-              start_t = time.time()
+          # --- 2. ModelScope 下载测试 ---
+          separator("🌐 ModelScope 带宽测试")
+          # 目标：Gemma-4 GGUF 模型文件
+          TARGET_URL = "https://modelscope.cn/models/unsloth/gemma-4-E2B-it-GGUF/resolve/master/mmproj-F16.gguf"
+          
+          def download_chunk(url, start, end, duration=10, stop_time=0):
+              total = 0
               try:
-                  with requests.get(url, stream=True, timeout=5) as r:
-                      for chunk in r.iter_content(chunk_size=1024*256):
-                          if time.time() > start_t + duration:
+                  headers = {'Range': f'bytes={start}-{end}'}
+                  with requests.get(url, headers=headers, stream=True, timeout=10) as r:
+                      for chunk in r.iter_content(chunk_size=1024*512):
+                          if time.time() > stop_time:
                               break
                           if chunk:
-                              total_bytes += len(chunk)
+                              total += len(chunk)
               except:
                   pass
-              return total_bytes
+              return total
 
           net_results = []
           for i in range(1, 4):
-              print(f"▶️  网络测试 第 {i} 轮 (10s并发下载)...", end="", flush=True)
+              print(f"▶️  网络下载 第 {i} 轮 (10s并发压榨)...", end="", flush=True)
               start_t = time.perf_counter()
+              stop_t = time.time() + 10
               
-              # 开启多线程模拟真实带宽压榨
-              with ThreadPoolExecutor(max_workers=4) as executor:
-                  futures = [executor.submit(download_worker, url) for url in TEST_URLS]
+              # 开启 8 线程并发下载不同的 range，模拟真实高带宽拉取
+              chunk_size = 50 * 1024 * 1024 # 50MB 偏移
+              with ThreadPoolExecutor(max_workers=8) as executor:
+                  futures = [
+                      executor.submit(download_chunk, TARGET_URL, j*chunk_size, (j+1)*chunk_size, stop_time=stop_t) 
+                      for j in range(8)
+                  ]
                   cycle_bytes = sum(f.result() for f in futures)
               
               actual_duration = time.perf_counter() - start_t
               mbps = (cycle_bytes * 8) / (1024 * 1024) / actual_duration
               net_results.append(mbps)
-              print(f" 完成! 速度: {mbps:.2f} Mbps")
-              if i < 3: time.sleep(5)
+              print(f" 完成! 速度: {mbps:.2f} Mbps (约 {mbps/8:.2f} MB/s)")
+              if i < 3: 
+                  print(f"💤 冷却 5s...")
+                  time.sleep(5)
 
-          # --- 3. CPU 运算测试 (保留对比) ---
+          # --- 3. CPU 运算测试 ---
           separator("🧠 CPU 矩阵运算测试")
           size = 4000
           a = np.random.randn(size, size).astype(np.float32)
@@ -105,7 +107,10 @@ jobs:
 
           # --- 4. 汇总 ---
           separator("📊 最终结论")
+          avg_net = sum(net_results)/3
+          avg_cpu = sum(cpu_results)/3
           print(f"平台: {sys.platform}")
-          print(f"平均下载速度: {sum(net_results)/3:.2f} Mbps (约 {sum(net_results)/24:.2f} MB/s)")
-          print(f"平均计算性能: {sum(cpu_results)/3:.2f} ops/s")
-          print(f"网络波动率: {(max(net_results)-min(net_results))/(sum(net_results)/3)*100:.2f}%")
+          print(f"ModelScope 平均带宽: {avg_net:.2f} Mbps")
+          print(f"CPU 矩阵运算平均性能: {avg_cpu:.2f} ops/s")
+          print(f"综合表现评分: {(avg_net / 100) + (avg_cpu * 10):.2f}")
+          separator("测试结束")
