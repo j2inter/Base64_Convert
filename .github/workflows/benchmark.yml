@@ -1,4 +1,4 @@
-name: Pure Python Benchmark
+name: Pure Python Benchmark with Specs
 
 on: 
   workflow_dispatch:
@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Run Benchmark Script
+      - name: Run Benchmark & Audit
         shell: python
         env:
           PYTHONIOENCODING: "utf-8"
@@ -28,63 +28,81 @@ jobs:
           import hashlib
           import os
           import io
-          import pathlib
+          import platform
+          import subprocess
+          import multiprocessing
 
-          # 解决 Windows Emoji 编码问题
+          # 编码修复 (Windows 必备)
           if sys.platform == "win32":
               sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
           def separator():
-              print("-" * 40)
+              print("-" * 50)
 
-          print(f"🚀 开始基准测试 | 平台: {sys.platform} | 版本: {sys.version}")
-          
-          # --- 1. 计算性能测试 (CPU) ---
-          # 逻辑：进行 500 万次迭代的 SHA256 哈希计算
+          # --- 0. 硬件环境审计 ---
           separator()
-          print("🧠 测试 1: CPU 计算能力 (SHA256 密集计算)...")
+          print("🖥️  HARDWARE & SYSTEM AUDIT")
+          separator()
+          print(f"操作系统: {platform.system()} {platform.release()} ({platform.machine()})")
+          print(f"系统版本: {platform.version()}")
+          print(f"Python版本: {sys.version.split()[0]}")
+          print(f"逻辑核心数: {multiprocessing.cpu_count()}")
+          
+          # 尝试获取物理内存大小
+          try:
+              if sys.platform == "win32":
+                  # Windows 使用 wmic (虽然弃用但在 GitHub Runner 默认环境中通常仍可用)
+                  mem = subprocess.check_output("wmic OS get TotalVisibleMemorySize /Value", shell=True).decode()
+                  kb = int(mem.split('=')[1].strip())
+                  print(f"物理内存: {round(kb / 1024 / 1024, 2)} GB")
+              elif sys.platform == "linux":
+                  with open('/proc/meminfo', 'r') as f:
+                      mem = f.readline()
+                      kb = int(mem.split()[1])
+                      print(f"物理内存: {round(kb / 1024 / 1024, 2)} GB")
+              elif sys.platform == "darwin":
+                  mem = subprocess.check_output(["sysctl", "-n", "hw.memsize"]).decode().strip()
+                  print(f"物理内存: {round(int(mem) / 1024**3, 2)} GB")
+          except:
+              print("物理内存: 无法获取详细数值")
+
+          # --- 1. 计算性能测试 (CPU) ---
+          print("\n" + "="*50)
+          print("🧠 测试 1: CPU 计算能力 (SHA256 x 500万次)")
           start_time = time.perf_counter()
           data = b"Gemini benchmark data" * 100
           for _ in range(5_000_000):
-              hashlib.sha256(data).hexdigest()
+              hashlib.sha256(data).digest()
           cpu_duration = time.perf_counter() - start_time
-          print(f"✅ 完成！耗时: {cpu_duration:.2f} 秒")
+          print(f">>> 耗时: {cpu_duration:.3f} 秒")
 
           # --- 2. 磁盘 IO 测试 (Disk) ---
-          # 逻辑：写入并读取一个 500MB 的临时文件
-          separator()
-          print("💾 测试 2: 磁盘 IO 性能 (500MB 读写)...")
-          test_file = pathlib.Path("io_test.bin")
-          content = os.urandom(1024 * 1024) # 1MB 随机数据
-          
+          print("\n" + "="*50)
+          print("💾 测试 2: 磁盘序列 IO (500MB 写入+读取)")
+          test_file = "io_test_bench.bin"
+          content = os.urandom(1024 * 1024) 
           start_time = time.perf_counter()
-          # 写入
           with open(test_file, "wb") as f:
               for _ in range(500):
                   f.write(content)
-          # 读取
           with open(test_file, "rb") as f:
-              while f.read(1024 * 1024):
-                  pass
+              while f.read(1024 * 1024): pass
           io_duration = time.perf_counter() - start_time
-          if test_file.exists(): test_file.unlink()
-          print(f"✅ 完成！耗时: {io_duration:.2f} 秒")
+          if os.path.exists(test_file): os.remove(test_file)
+          print(f">>> 耗时: {io_duration:.3f} 秒")
 
-          # --- 3. 内存分配测试 (RAM) ---
-          # 逻辑：快速创建并销毁大量列表对象
-          separator()
-          print("⚡ 测试 3: 内存管理 (大量对象创建)...")
+          # --- 3. 内存管理测试 (RAM) ---
+          print("\n" + "="*50)
+          print("⚡ 测试 3: 内存分配速度 (1000万个对象操作)")
           start_time = time.perf_counter()
-          container = []
-          for i in range(10_000_000):
-              container.append(i)
-          container.clear()
+          container = [i for i in range(10_000_000)]
+          container.reverse()
+          del container
           mem_duration = time.perf_counter() - start_time
-          print(f"✅ 完成！耗时: {mem_duration:.2f} 秒")
+          print(f">>> 耗时: {mem_duration:.3f} 秒")
 
           # --- 汇总结果 ---
-          separator()
-          print(f"📊 最终结果汇总 (${{ matrix.os }}):")
-          print(f"CPU: {cpu_duration:.2f}s | IO: {io_duration:.2f}s | MEM: {mem_duration:.2f}s")
-          print(f"总计得分 (越低越快): {cpu_duration + io_duration + mem_duration:.2f}s")
-          separator()
+          print("\n" + "📊" * 15)
+          print(f"平台汇总: {matrix_os if 'matrix_os' in locals() else platform.system()}")
+          print(f"总计得分 (三项总用时): {cpu_duration + io_duration + mem_duration:.3f}s")
+          print("📊" * 15)
