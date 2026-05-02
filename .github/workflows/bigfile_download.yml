@@ -1,4 +1,4 @@
-name: High-Speed 7z Split Release
+name: Turbo 7z Batch Release
 
 on:
   workflow_dispatch:
@@ -8,13 +8,13 @@ on:
         required: true
         type: string
       split_size:
-        description: '分卷大小 (例如: 2G, 500m)'
+        description: '分卷大小 (如: 2G, 4000m)'
         required: true
         default: '2G'
 
 jobs:
   process-and-release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest # 实际运行时会对应你那台 145G 的机器
     permissions:
       contents: write
 
@@ -22,52 +22,66 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 关键步骤：清理磁盘空间（标准 Runner 必做）
-      - name: Free Disk Space (Ubuntu)
+      - name: System & Disk Check (Before)
         run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf "/usr/local/share/boost"
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          echo "### [1/2] 硬件与磁盘初始状态"
+          echo "CPU: $(lscpu | grep 'Model name' | cut -d: -f2 | xargs)"
+          echo "RAM: $(free -h | awk '/^Mem:/ {print $2}')"
+          df -h /
+          echo "--------------------------------------"
 
-      - name: Install dependencies
+      - name: Free Disk Space
+        run: |
+          # 清理常见预装占用
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc "/usr/local/share/boost" "$AGENT_TOOLSDIRECTORY"
+          echo "清理完成。"
+
+      - name: System & Disk Check (After)
+        run: |
+          echo "### [2/2] 清理后磁盘状态"
+          df -h /
+          echo "--------------------------------------"
+
+      - name: Install Tools
         run: |
           sudo apt-get update
           sudo apt-get install -y aria2 p7zip-full
 
-      - name: Process Files
-        id: process
+      - name: Parallel Download All
+        id: download
+        run: |
+          mkdir -p dl_tmp
+          # 将输入的 URL 转换为 aria2 的任务列表
+          echo "${{ inputs.urls }}" | tr ',;' '\n' | xargs -I {} echo "{}" > download_list.txt
+          
+          echo ">>> 开始全并发下载..."
+          # -j 5: 同时下载最多 5 个文件
+          # -x 16: 每个文件开启 16 个线程
+          aria2c -i download_list.txt -j 5 -x 16 -s 16 -d ./dl_tmp --summary-interval=10
+          
+          echo "下载目录内容："
+          ls -lh ./dl_tmp
+
+      - name: Batch 7z Compression
+        id: compress
         run: |
           mkdir -p output_folder
           
-          # 解析输入并循环下载
-          IFS=',;' read -r -a url_array <<< "${{ inputs.urls }}"
-          for url in "${url_array[@]}"; do
-            url=$(echo "$url" | xargs)
-            [ -z "$url" ] && continue
-
-            echo ">>> 开始下载: $url"
-            # 使用 aria2c 开启 16 线程下载，提高速度
-            aria2c -x 16 -s 16 -d ./dl_tmp --summary-interval=10 "$url"
+          cd dl_tmp
+          for file in *; do
+            [ -f "$file" ] || continue
+            SAFE_NAME=$(echo "$file" | sed 's/[^a-zA-Z0-9._-]/_/g')
             
-            # 获取下载的文件名
-            FILENAME=$(ls ./dl_tmp | head -n 1)
-            SAFE_NAME=$(echo "$FILENAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
-            
-            echo ">>> 开始分卷压缩: $FILENAME"
-            # 使用 7z 压缩并分卷
-            # -v: 指定分卷大小
-            # -mx0: 仅存储（不压缩，速度最快，适合 30G 大文件）
-            7z a -v${{ inputs.split_size }} -mx0 "output_folder/${SAFE_NAME}.7z" "./dl_tmp/$FILENAME"
-            
-            # 压缩完立即删除原始文件，释放空间给下一个
-            rm -rf "./dl_tmp/$FILENAME"
+            echo ">>> 正在压缩并切分: $file"
+            # -mx=3: 快速压缩模式（稍微压缩，不只是存档）
+            # -mmt=on: 开启多线程，压榨 EPYC 性能
+            # -v: 自动分卷
+            7z a -v${{ inputs.split_size }} -mx=3 -mmt=on "../output_folder/${SAFE_NAME}.7z" "$file"
           done
-
-          # 记录第一个文件的名字作为 Tag 标识
-          FIRST_NAME=$(ls output_folder | head -n 1 | cut -d. -f1)
-          echo "tag_prefix=$FIRST_NAME" >> $GITHUB_OUTPUT
+          
+          # 获取第一个文件的名称作为 Tag 识别码
+          TAG_BASE=$(ls ../output_folder/ | head -n 1 | cut -d. -f1)
+          echo "tag_base=$TAG_BASE" >> $GITHUB_OUTPUT
 
       - name: Generate timestamp
         id: time
@@ -76,10 +90,11 @@ jobs:
       - name: Create Release and Upload
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.process.outputs.tag_prefix }}-${{ steps.time.outputs.time }}
-          name: "Batch 7z Release [Size: ${{ inputs.split_size }}]"
+          tag_name: ${{ steps.compress.outputs.tag_base }}-${{ steps.time.outputs.time }}
+          name: "Batch 7z Release (Slight Compress)"
           body: |
-            **Files processed successfully.**
-            - Split Size: ${{ inputs.split_size }}
-            - Engine: 7-Zip (Store Mode)
+            **系统硬件信息**
+            - CPU: AMD EPYC 9V74
+            - 压缩模式: 7z -mx3 (Fast)
+            - 分卷大小: ${{ inputs.split_size }}
           files: output_folder/*
